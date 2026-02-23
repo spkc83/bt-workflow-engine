@@ -1,0 +1,12 @@
+py-trees>=2.3
+google-genai
+fastapi
+uvicorn[standard]
+aiosqlite
+python-dotenv
+shiny
+httpx
+pydantic
+pandas
+pytest
+pytest-asyncio

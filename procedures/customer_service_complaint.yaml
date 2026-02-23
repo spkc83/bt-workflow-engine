@@ -1,0 +1,146 @@
+procedure:
+  id: cs_complaint
+  name: "Customer Service - Complaint Handling"
+  description: "Handle customer complaints about products, services, or orders"
+  version: "1.0"
+  trigger_intents:
+    - complaint
+    - unhappy
+    - dissatisfied
+    - problem with
+    - issue with
+    - bad experience
+
+  steps:
+    - id: greet_and_collect
+      instruction: >
+        Check the customer's message for complaint details and ANY order identification
+        clues — this includes: an explicit order number (e.g., "ORD-123"), OR natural
+        language like a store/merchant name, item description, approximate amount, or time
+        reference. Also look for the nature of the complaint (quality, delivery, billing, etc.).
+        If ANY identifiable details are present, acknowledge with empathy and IMMEDIATELY
+        proceed to the identify_issue step — do NOT stop and wait for another message.
+        Do NOT ask for an order ID when the customer has already described their purchase.
+        Only if the message contains NO complaint details at all, greet warmly with empathy
+        and ask them to describe what happened and what they purchased (store name, item,
+        approximate amount). Never ask for an order ID.
+      action: collect_info
+      required_info:
+        - complaint_description
+      next_step: identify_issue
+
+    - id: identify_issue
+      instruction: >
+        Carefully review the complaint description provided by the customer and classify the
+        complaint into one of the following categories:
+        1. product_quality — The customer received a defective, damaged, or incorrect item.
+        2. delivery — The order arrived late, was lost in transit, or was delivered to the
+           wrong address.
+        3. service — The customer had a negative experience with a previous support agent,
+           billing error, or account-related issue.
+        4. billing — The customer was charged incorrectly, saw an unexpected charge, or has
+           a dispute about pricing.
+        Based on the classification, determine what context needs to be looked up. For
+        product and delivery complaints, look up the order. For service and billing complaints,
+        proceed directly to attempting resolution. Do not announce the classification to the
+        customer; simply route internally to the appropriate next step.
+      action: evaluate
+      conditions:
+        - if: "complaint_type in [product_quality, delivery]"
+          next_step: lookup_context
+        - if: "complaint_type in [service, billing]"
+          next_step: attempt_resolution
+
+    - id: lookup_context
+      instruction: >
+        Pull up the relevant order using the information available. Choose the right tool:
+        - If the customer gave an EXACT order ID (e.g., "ORD-123"), use `lookup_order`.
+        - In ALL other cases (store name, item description, amount, date, or any natural
+          language clues), use `search_orders`. Extract the details:
+          * merchant_name: the store or brand name mentioned
+          * amount: any dollar figure mentioned. The tool searches ±10%.
+          * date: estimate from time references ("last week" → approximate date)
+          * customer_id: use the user_id (which is the customer's ID, e.g., "CUST-456")
+          Pass whatever details you have — even just the merchant_name alone is enough.
+        If the search returns multiple matches, present them and ask the customer to confirm.
+        Whether the lookup succeeds or fails, proceed to attempt a resolution — if the lookup
+        fails, work with the information the customer has provided directly.
+      action: tool_call
+      tool: lookup_order
+      tools:
+        - lookup_order
+        - search_orders
+      on_success: attempt_resolution
+      on_failure: attempt_resolution
+
+    - id: attempt_resolution
+      instruction: >
+        Based on the complaint type and any order context retrieved, offer an appropriate
+        resolution. Tailor your response to the specific situation:
+        - For product_quality issues (defective/damaged/wrong item): Offer a replacement
+          shipment at no cost, or a full refund if the customer prefers.
+        - For delivery issues (late/lost/wrong address): Offer to reship the order, initiate
+          a trace with the carrier, or provide a refund if the order cannot be located.
+        - For service issues (bad experience with previous agent): Sincerely apologize on
+          behalf of the company, offer store credit as a goodwill gesture, and assure the
+          customer this feedback will be addressed.
+        - For billing issues (incorrect charge): Explain the charge if it was correct, or
+          initiate a correction/refund if the charge was erroneous.
+        Be warm, solution-focused, and give the customer options where possible. Empower them
+        to choose the resolution that works best for them. If the customer is satisfied with
+        the proposed resolution, proceed to document_complaint. If the customer remains
+        dissatisfied or requests supervisor involvement, proceed to escalate_if_needed.
+      action: inform
+      options:
+        - label: "Customer accepts proposed resolution"
+          next_step: document_complaint
+        - label: "Customer is unsatisfied or requests escalation"
+          next_step: escalate_if_needed
+
+    - id: escalate_if_needed
+      instruction: >
+        If the customer's complaint could not be resolved through standard options, or if the
+        customer explicitly requests to speak with a manager or supervisor, escalate the case.
+        Before escalating, compile a concise summary of: the complaint description, the category
+        identified, what resolutions were offered, and why the customer is still unsatisfied.
+        Inform the customer respectfully that you are escalating their case and provide them
+        with a case reference number and expected response time.
+        Example: "I completely understand, and I want to make sure you get the resolution you
+        deserve. I'm escalating your case to my supervisor right now with full notes on
+        everything we've discussed. Your case reference number is [CASE_ID], and you can
+        expect to hear back within [TIMEFRAME]. I'm sorry we couldn't resolve this directly,
+        and I appreciate your patience."
+      action: tool_call
+      tool: escalate_to_supervisor
+      on_success: close_case
+      on_failure: close_case
+
+    - id: document_complaint
+      instruction: >
+        Record detailed case notes documenting the complaint and the resolution provided.
+        The notes should include: the nature of the complaint (category and description),
+        any order or account information referenced, the resolution offered and accepted
+        by the customer, and any follow-up actions required. Accurate documentation is
+        important for quality assurance and trend analysis. This step should be completed
+        before closing the case. The customer does not need to be informed of this step
+        explicitly — simply note internally that you are documenting the interaction.
+      action: tool_call
+      tool: add_case_note
+      on_success: close_case
+      on_failure: close_case
+
+    - id: close_case
+      instruction: >
+        Bring the interaction to a positive close. Summarize the resolution that was reached
+        and confirm with the customer that they are satisfied before ending the conversation.
+        Ask if there is anything else you can help them with today. Update the case status
+        to reflect the outcome (resolved, escalated, pending follow-up, etc.).
+        Be genuine and appreciative: "To summarize, [brief summary of what was done]. I
+        really hope this resolves things for you, and I'm sorry again for the experience
+        you had. Is there anything else I can help you with today? Thank you for bringing
+        this to our attention — feedback like yours helps us improve."
+      action: tool_call
+      tool: update_case_status
+      on_success: end
+      on_failure: end
+      next_step: end

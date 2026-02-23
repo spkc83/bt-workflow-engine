@@ -1,0 +1,27 @@
+[project]
+name = "bt-workflow-engine"
+version = "0.1.0"
+description = "Behaviour Tree workflow engine for customer service CRM"
+requires-python = ">=3.11"
+dependencies = [
+    "py-trees>=2.3",
+    "google-genai",
+    "fastapi",
+    "uvicorn[standard]",
+    "aiosqlite",
+    "python-dotenv",
+    "shiny",
+    "httpx",
+    "pydantic",
+    "pandas",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
