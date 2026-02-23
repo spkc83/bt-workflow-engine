@@ -1,0 +1,222 @@
+procedure:
+  id: fraud_alert_triage
+  name: "Fraud Operations - Alert Triage"
+  description: "Triage and investigate fraud alerts, gather evidence, and take appropriate action"
+  version: "1.0"
+  trigger_intents:
+    - fraud alert
+    - suspicious activity
+    - fraud investigation
+    - alert triage
+    - suspicious transaction
+
+  steps:
+    - id: receive_alert
+      instruction: >
+        Check whether the analyst's message already contains a fraud alert ID (e.g.,
+        "FA-001"). If the alert ID IS already present, immediately call `get_fraud_alert`
+        with that ID — do NOT respond with just an acknowledgment and wait for another message.
+        If the alert ID is NOT present, ask the analyst to provide it.
+        Once the alert is retrieved, its details will include: alert type, creation timestamp,
+        the associated account or customer, the triggering event, and an initial risk score.
+        If the alert cannot be found, transition to alert_not_found.
+      action: tool_call
+      tool: get_fraud_alert
+      on_success: review_alert_details
+      on_failure: alert_not_found
+
+    - id: review_alert_details
+      instruction: >
+        Carefully review the alert details retrieved, paying close attention to:
+        1. Severity level: high, medium, or low — this determines the depth of investigation required.
+        2. Alert type: account takeover, card-not-present fraud, identity theft, unusual transaction
+           pattern, velocity abuse, etc.
+        3. Risk score: a numerical indicator from the fraud model (e.g., 0-100 scale).
+        4. Triggering event: the specific transaction or behavior that triggered the alert.
+        Based on severity, determine the investigation path:
+        - high severity (risk score >= 80 or flagged as critical): Full investigation — gather
+          transaction evidence, device info, and assess all risk signals.
+        - medium severity (risk score 40-79): Standard investigation — gather transaction history
+          and device info before assessing.
+        - low severity (risk score < 40): Quick review — assess available alert data before
+          deciding on action; may not require full evidence gathering.
+        Document your initial observations internally before proceeding.
+      action: evaluate
+      conditions:
+        - if: "severity == high OR risk_score >= 80"
+          next_step: gather_transaction_evidence
+        - if: "severity == medium AND risk_score >= 40"
+          next_step: gather_transaction_evidence
+        - if: "severity == low AND risk_score < 40"
+          next_step: assess_risk
+
+    - id: gather_transaction_evidence
+      instruction: >
+        Pull the account's recent transaction history to identify patterns or anomalies that
+        corroborate or contradict the fraud alert. Look for:
+        - Unusual transaction amounts (significantly higher or lower than typical behavior).
+        - Transactions in unusual geographic locations or countries not previously associated
+          with the account.
+        - High velocity of transactions in a short time window.
+        - Transactions at merchants or categories inconsistent with historical spending patterns.
+        - Multiple failed transaction attempts followed by a successful one.
+        Retrieve at minimum the last 30 days of transaction history, or more if the alert
+        suggests a longer pattern. Note any transactions that appear suspicious and flag them
+        for inclusion in the risk assessment. Proceed to check device information after
+        completing transaction review.
+      action: tool_call
+      tool: get_account_transactions
+      on_success: check_device_info
+      on_failure: check_device_info
+
+    - id: check_device_info
+      instruction: >
+        Retrieve device fingerprint data and login/session patterns associated with the
+        account to assess whether the activity is consistent with the legitimate account holder.
+        Look for the following risk signals:
+        - New or unrecognized device fingerprint not previously associated with the account.
+        - Login from an IP address in an unexpected country or region.
+        - Multiple rapid logins from different geographic locations (impossible travel).
+        - Login time patterns inconsistent with the account holder's typical usage.
+        - User-agent or browser/OS combinations not previously seen on the account.
+        - Failed login attempts prior to a successful login (credential stuffing indicator).
+        Document all device and session anomalies found. These findings will be combined with
+        the transaction evidence in the risk assessment step. Proceed to assess_risk.
+      action: tool_call
+      tool: check_device_fingerprint
+      on_success: assess_risk
+      on_failure: assess_risk
+
+    - id: assess_risk
+      instruction: >
+        Consolidate all evidence gathered — alert details, transaction history, and device/
+        session information — to make a comprehensive risk determination. Evaluate the
+        cumulative weight of evidence and classify the alert outcome as one of:
+        1. fraud_confirmed: Multiple high-confidence indicators are present (e.g., new device
+           + unusual geography + large transaction + velocity spike). Action: flag the account
+           and document findings for SAR (Suspicious Activity Report) filing if thresholds are met.
+        2. fraud_suspected: Some indicators are present but evidence is not conclusive
+           (e.g., new device but transactions are within normal amounts and patterns).
+           Action: flag the account for monitoring and escalate to senior analyst for final
+           determination.
+        3. false_positive: Evidence does not support fraud (e.g., customer is traveling,
+           device is new but purchase patterns are consistent, risk score was model noise).
+           Action: clear the alert and document reasoning.
+        Make the determination based on the totality of evidence, not any single signal in isolation.
+        Use your judgment to weigh conflicting signals appropriately.
+      action: evaluate
+      conditions:
+        - if: "multiple high-confidence fraud indicators present (new device + geo anomaly + velocity + large transaction)"
+          next_step: take_action_flag
+        - if: "some indicators present but not conclusive"
+          next_step: escalate_senior
+        - if: "evidence does not support fraud (false positive)"
+          next_step: take_action_clear
+
+    - id: take_action_flag
+      instruction: >
+        The evidence supports a fraud determination. Take the following actions:
+        1. Flag the account to restrict further transactions and protect the customer from
+           additional fraudulent activity.
+        2. If the fraudulent transaction amount meets SAR filing thresholds (typically $5,000
+           or more for a single transaction, or $25,000 or more in aggregate), initiate the
+           SAR filing process and note this in the case.
+        3. If applicable, notify the customer about the suspicious activity on their account
+           (this may be handled by a separate customer communications team — note it as a
+           required action if so).
+        Document the specific fraud indicators that led to this decision with precise detail.
+        Example: "Account flagged due to: unrecognized device fingerprint from [COUNTRY],
+        $[AMOUNT] transaction at [MERCHANT] — 8x above account average, 3 failed login
+        attempts preceding session. SAR filing initiated: [YES/NO]."
+        Proceed to document_findings.
+      action: tool_call
+      tool: flag_account
+      on_success: document_findings
+      on_failure: document_findings
+
+    - id: take_action_clear
+      instruction: >
+        The evidence does not support a fraud determination. Clear the alert as a false positive.
+        When clearing the alert, provide a clear and specific rationale explaining why the
+        activity was determined to be legitimate. This rationale is important for model
+        improvement and audit purposes. Include:
+        - Which signals were evaluated and found to be benign (e.g., customer is a known
+          frequent traveler, device change explained by recent device upgrade).
+        - Why the initial risk score or alert trigger appears to have been a model false positive.
+        Example: "Alert cleared — false positive. Customer account shows consistent travel
+        history to [COUNTRY]. Transaction amount within 2x of 90-day average. No device
+        anomalies beyond expected upgrade pattern. No further action required."
+        Proceed to document_findings.
+      action: tool_call
+      tool: close_alert
+      on_success: document_findings
+      on_failure: document_findings
+
+    - id: escalate_senior
+      instruction: >
+        The case presents ambiguous or conflicting evidence that warrants senior analyst review
+        before a final determination is made. Prepare a comprehensive escalation brief including:
+        - Alert ID, type, severity, and risk score.
+        - Summary of transaction evidence (key anomalies noted).
+        - Summary of device/session evidence (key anomalies noted).
+        - Your preliminary assessment and the specific signals causing uncertainty.
+        - Recommended next steps or questions for the senior analyst to consider.
+        Escalate the case with this brief to the senior analyst or fraud operations supervisor.
+        Inform the initiating analyst that the case has been escalated and provide an expected
+        response timeline. Example: "Case [ALERT_ID] escalated to senior analyst due to
+        ambiguous risk signals. Escalation brief submitted with full evidence summary.
+        Expected review within [TIMEFRAME]."
+      action: tool_call
+      tool: escalate_to_supervisor
+      on_success: document_findings
+      on_failure: document_findings
+
+    - id: document_findings
+      instruction: >
+        Create a thorough case note documenting all findings, evidence reviewed, and actions
+        taken during this triage session. The documentation should include:
+        1. Alert summary: ID, type, severity, risk score, triggering event.
+        2. Evidence reviewed: Key transaction anomalies identified, device/session risk signals found.
+        3. Risk determination: fraud_confirmed / fraud_suspected / false_positive, with detailed
+           reasoning for the determination.
+        4. Actions taken: Account flagged / alert cleared / escalated, SAR filing initiated
+           (yes/no with threshold justification), customer notification required (yes/no).
+        5. Analyst notes: Any additional context, caveats, or recommended follow-up actions.
+        Thorough documentation is critical for regulatory compliance, audit trails, and
+        model feedback loops. Be precise and factual — avoid ambiguous language.
+        Proceed to close_or_resolve after documenting.
+      action: tool_call
+      tool: add_case_note
+      on_success: close_or_resolve
+      on_failure: close_or_resolve
+
+    - id: alert_not_found
+      instruction: >
+        The alert ID provided could not be located in the fraud monitoring system. Inform the
+        analyst that the alert was not found and ask them to verify the alert ID for accuracy.
+        Suggest possible reasons: the ID may have been entered incorrectly, the alert may have
+        already been closed or merged with another case, or there may be a system sync delay.
+        Example: "I was unable to locate alert [ALERT_ID] in the system. Could you double-check
+        the alert ID? It's possible the alert has already been closed, or there may be a brief
+        delay in system sync. Please verify and provide the correct ID when ready."
+        Return to receive_alert to try again with the corrected alert ID.
+      action: inform
+      next_step: receive_alert
+
+    - id: close_or_resolve
+      instruction: >
+        Close the alert with the appropriate resolution status based on the actions taken:
+        - If the account was flagged for fraud: close with status "confirmed_fraud" or
+          "pending_review" depending on whether SAR filing is in progress.
+        - If the alert was cleared as a false positive: close with status "false_positive".
+        - If the case was escalated: close with status "escalated_pending_senior_review".
+        Update the alert record with the final resolution and timestamp. Confirm with the
+        initiating analyst that the triage is complete and summarize the outcome.
+        Example: "Triage complete for alert [ALERT_ID]. Outcome: [RESOLUTION_STATUS].
+        Case notes have been filed. [Any follow-up actions required are noted above.]
+        This alert is now closed."
+      action: tool_call
+      tool: close_alert
+      on_success: end
+      on_failure: end
+      next_step: end
