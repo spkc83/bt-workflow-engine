@@ -2,6 +2,9 @@
 
 Validates required fields, normalizes optional fields with defaults,
 and returns a clean dict ready for compilation.
+
+Supports both legacy format (string conditions, flat required_info) and
+fine-grained format (structured conditions, extract_fields, arg_mappings).
 """
 
 from __future__ import annotations
@@ -90,13 +93,18 @@ def _validate_step(step: dict, index: int, source: Path) -> None:
         )
 
     if action == "evaluate" and "conditions" not in step:
-        raise ProcedureValidationError(
-            f"Step '{step['id']}' (evaluate) must have 'conditions' in {source}"
-        )
+        # Fine-grained format may use classify_categories instead of conditions
+        if "classify_categories" not in step:
+            raise ProcedureValidationError(
+                f"Step '{step['id']}' (evaluate) must have 'conditions' or 'classify_categories' in {source}"
+            )
 
 
 def _normalize_steps(proc: dict) -> None:
-    """Normalize optional fields with sensible defaults."""
+    """Normalize optional fields with sensible defaults.
+
+    Handles both legacy format and fine-grained format fields.
+    """
     for step in proc["steps"]:
         # Ensure instruction has a default
         step.setdefault("instruction", "")
@@ -111,16 +119,24 @@ def _normalize_steps(proc: dict) -> None:
             # Ensure 'tools' list exists even for single-tool steps
             if "tools" not in step and "tool" in step:
                 step.setdefault("tools", [step["tool"]])
+            # Fine-grained: tool_configs (list of ToolConfig dicts)
+            step.setdefault("tool_configs", None)
 
         # Normalize collect_info steps
         if step["action"] == "collect_info":
             step.setdefault("required_info", [])
             step.setdefault("next_step", None)
             step.setdefault("extract_keys", None)
+            # Fine-grained fields
+            step.setdefault("extract_fields", None)
+            step.setdefault("required_fields", None)
 
         # Normalize evaluate steps
         if step["action"] == "evaluate":
             step.setdefault("classify", None)
+            # Fine-grained fields
+            step.setdefault("classify_categories", None)
+            step.setdefault("classify_result_key", None)
 
         # Normalize inform steps
         if step["action"] == "inform":

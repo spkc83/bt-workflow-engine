@@ -57,10 +57,13 @@ bt-workflow-engine/
 │   └── compiler/                 # YAML-to-py_trees compiler
 │       ├── __init__.py           # ProcedureCompiler (public API)
 │       ├── parser.py             # YAML loading + validation
-│       ├── condition_parser.py   # Condition string → Python predicate
+│       ├── condition_parser.py   # Condition string/object → Python predicate
 │       ├── step_compilers.py     # Per-action subtree builders
 │       ├── tool_registry.py      # Tool name → async function mapping
-│       └── tree_manager.py       # Runtime management, intent routing
+│       ├── tree_manager.py       # Runtime management, intent routing
+│       ├── schemas.py            # Pydantic models for fine-grained format
+│       ├── llm_utils.py          # Constrained decoding helpers
+│       └── ingestion.py          # LLM pipeline: plain text → procedure
 ├── tools/                        # Async tool functions
 │   ├── crm_tools.py              # Orders, refunds, cases (5 tools)
 │   ├── common_tools.py           # Escalation, notes, knowledge (3 tools)
@@ -72,12 +75,15 @@ bt-workflow-engine/
 │   ├── customer_service_refund.yaml
 │   ├── customer_service_complaint.yaml
 │   └── fraud_ops_alert_triage.yaml
-├── tests/                        # Test suite (113 tests)
+├── tests/                        # Test suite (169 tests)
 │   ├── test_bt_nodes.py          # Node unit tests
 │   ├── test_bt_runner.py         # Runner integration tests
 │   ├── test_tools.py             # Tool function tests
 │   ├── test_compiler.py          # Compiler unit + integration tests
-│   └── test_tree_equivalence.py  # Compiled vs hand-coded equivalence
+│   ├── test_tree_equivalence.py  # Compiled vs hand-coded equivalence
+│   ├── test_schemas.py           # Schema validation + predicate tests
+│   ├── test_constrained.py       # Constrained decoding tests
+│   └── test_ingestion.py         # Ingestion pipeline tests
 ├── main.py                       # FastAPI backend
 ├── app_ui.py                     # Shiny for Python frontend
 └── config.py                     # LLM configuration (Google Gemini)
@@ -106,7 +112,7 @@ uvicorn main:app --reload --port 8000
 ### Run Tests
 
 ```bash
-# Full test suite (113 tests)
+# Full test suite (169 tests)
 pytest tests/ -v
 
 # Just compiler tests
@@ -114,6 +120,9 @@ pytest tests/test_compiler.py -v
 
 # Equivalence tests (compiled vs hand-coded)
 pytest tests/test_tree_equivalence.py -v
+
+# Ingestion + schema + constrained decoding tests
+pytest tests/test_schemas.py tests/test_ingestion.py tests/test_constrained.py -v
 ```
 
 ## Workflows
@@ -127,6 +136,14 @@ Three built-in workflows are provided as YAML procedures:
 | **Fraud Triage** | `fraud_ops_alert_triage.yaml` | fraud alert, suspicious activity | 9 |
 
 ### Creating a New Workflow
+
+There are two ways to create a new workflow:
+
+**Option A: Ingest from plain English** (recommended for new procedures):
+
+Use the ingestion pipeline to convert a plain English SOP into a structured YAML procedure. The LLM pipeline handles step identification, condition structuring, tool mapping, and validation automatically. See [Ingest a Plain English SOP](#ingest-a-plain-english-sop) above.
+
+**Option B: Write YAML manually** (for precise control):
 
 1. Create a YAML file in `procedures/`:
 
@@ -177,12 +194,13 @@ curl -X POST http://localhost:8000/api/procedures/reload
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/api/chat` | Send a message, get a response (creates session on first call) |
+| `POST` | `/api/procedures/ingest` | Convert plain English SOP to structured YAML procedure |
+| `POST` | `/api/procedures/reload` | Hot-reload all YAML procedures |
 | `GET` | `/api/bt/trace/{session_id}` | Full execution trace for a session |
 | `GET` | `/api/bt/trace/{session_id}/summary` | Trace summary |
 | `GET` | `/api/customers` | List all customers |
 | `GET` | `/api/tables/{table_name}` | Browse database tables |
 | `GET` | `/api/sessions` | List active sessions |
-| `POST` | `/api/procedures/reload` | Hot-reload all YAML procedures |
 | `GET` | `/health` | Health check with loaded workflows |
 
 ### Chat Example
@@ -192,6 +210,19 @@ curl -X POST http://localhost:8000/api/chat \
   -H "Content-Type: application/json" \
   -d '{"message": "I want a refund for my order from TechMart", "user_id": "CUST-456"}'
 ```
+
+### Ingest a Plain English SOP
+
+```bash
+curl -X POST http://localhost:8000/api/procedures/ingest \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "When a customer requests a refund: 1) Collect order details 2) Look up the order 3) Check eligibility (within 30 days, delivered status) 4) Process refund or offer alternatives 5) Close the case",
+    "output_format": "yaml"
+  }'
+```
+
+Returns the structured procedure and writes a YAML file ready for the compiler.
 
 ## BT Compiler
 
@@ -271,9 +302,12 @@ The test suite validates the full stack:
 - **Tool tests** (13): All 14 tool functions against SQLite
 - **Compiler tests** (45): Condition parser, tool registry, YAML parser, full compilation, tree manager
 - **Equivalence tests** (16): Compiled trees produce same routing as hand-coded trees
+- **Schema tests** (21): Pydantic models, structured condition predicates, serialization round-trips
+- **Constrained decoding tests** (8): `generate_structured`, `classify_enum`, `LLMClassifyNode` with constrained/fallback
+- **Ingestion tests** (12): Pipeline stages, validation, tool refinement, YAML output (mocked LLM)
 
 ```bash
-pytest tests/ -v  # 113 tests, ~4 seconds
+pytest tests/ -v  # 169 tests, ~4 seconds
 ```
 
 ## License

@@ -13,11 +13,19 @@ The compiler (`bt_engine/compiler/`) converts YAML procedure definitions into fu
   - [Step Compilers](#step-compilers)
   - [Tool Registry](#tool-registry)
   - [Tree Manager](#tree-manager)
+  - [Pydantic Schemas](#pydantic-schemas)
+  - [Constrained Decoding Helpers](#constrained-decoding-helpers)
+  - [Ingestion Pipeline](#ingestion-pipeline)
 - [YAML Procedure Format](#yaml-procedure-format)
+  - [Legacy Format](#legacy-format)
+  - [Fine-Grained Format](#fine-grained-format)
 - [Action Types](#action-types)
 - [Condition Grammar](#condition-grammar)
+  - [String Conditions (Legacy)](#string-conditions-legacy)
+  - [Structured Conditions (Fine-Grained)](#structured-conditions-fine-grained)
 - [Cycle Handling](#cycle-handling)
 - [Adding New Tools](#adding-new-tools)
+- [Ingesting Plain English SOPs](#ingesting-plain-english-sops)
 - [Design Decisions](#design-decisions)
 
 ---
@@ -31,6 +39,13 @@ The compiler bridges the gap between declarative YAML workflow definitions and t
 │  YAML File   │────▶│   Compiler   │────▶│  py_trees    │
 │  (declare)   │     │  (compile)   │     │  (execute)   │
 └──────────────┘     └──────────────┘     └──────────────┘
+       ▲
+       │ generates
+┌──────────────┐
+│  Plain Text  │────▶ Ingestion Pipeline (LLM + constrained decoding)
+│  (SOP/Runbook│     → Structure extraction → Step detailing
+│   in English)│     → Condition/tool refinement → Validation loop
+└──────────────┘
 ```
 
 Each YAML step maps to a **subtree pattern** — a composition of py_trees nodes (Sequence, Selector, ConditionNode, ToolActionNode, LLMResponseNode, etc.) that implements the step's behavior.
@@ -221,6 +236,78 @@ manager.reload_all()
 - `"complaint"`, `"unhappy"`, `"dissatisfied"` → `"complaint"`
 - `"fraud alert"`, `"suspicious activity"` → `"fraud_alert"`
 
+### Pydantic Schemas
+
+**File**: `bt_engine/compiler/schemas.py`
+
+Defines the fine-grained procedure format as Pydantic models. These serve triple duty: constrained decoding schema for LLM output, validation, and documentation.
+
+**Key models**:
+
+| Model | Purpose |
+|-------|---------|
+| `Procedure` | Top-level procedure with metadata, tools, and steps |
+| `ProcedureStep` | A single step with action-specific fine-grained fields |
+| `StructuredCondition` | Machine-readable condition: `{field, operator, value}` |
+| `ConditionBranch` | An evaluate branch: structured condition or LLM-classified |
+| `ToolConfig` | Tool with explicit `arg_mappings` and `guard_condition` |
+| `ExtractField` | Field to extract: `{key, description, examples}` |
+| `InformOption` | User option with `detection_keywords` for deterministic routing |
+| `ProcedureOverview` / `StepOverview` | Intermediate schemas for ingestion Pass 1 |
+
+**Enums**: `ActionType` (collect_info, tool_call, evaluate, inform, end), `ConditionOperator` (eq, neq, gt, gte, lt, lte, in, not_in, within_days, outside_days, contains).
+
+### Constrained Decoding Helpers
+
+**File**: `bt_engine/compiler/llm_utils.py`
+
+Shared utilities for constrained LLM calls using Google GenAI structured output.
+
+```python
+from bt_engine.compiler.llm_utils import generate_structured, classify_enum, make_dynamic_enum
+
+# JSON-constrained generation: response matches Pydantic schema exactly
+condition = await generate_structured("Parse this condition...", StructuredCondition)
+
+# Enum-constrained classification: response is guaranteed to be one of the values
+CategoryEnum = make_dynamic_enum("Cat", ["fraud_confirmed", "false_positive"])
+result = await classify_enum("Classify this alert...", CategoryEnum)
+```
+
+- `generate_structured(prompt, schema)` — Uses `response_mime_type="application/json"` with `response_schema` set to the Pydantic model
+- `classify_enum(prompt, enum_class)` — Uses `response_mime_type="text/x.enum"` with `response_schema` set to the Enum
+- `make_dynamic_enum(name, values)` — Creates Enum classes at runtime from a list of strings
+
+### Ingestion Pipeline
+
+**File**: `bt_engine/compiler/ingestion.py`
+
+Multi-pass LLM pipeline that converts plain English SOPs into validated `Procedure` objects.
+
+```python
+from bt_engine.compiler.ingestion import ProcedureIngester
+from bt_engine.compiler.tool_registry import create_default_registry
+
+ingester = ProcedureIngester(registry=create_default_registry())
+
+# Plain text → validated Procedure object
+procedure = await ingester.ingest("When a customer requests a refund, first collect...")
+
+# Plain text → YAML file
+path = await ingester.ingest_to_yaml("When a customer...", "procedures/my_proc.yaml")
+```
+
+**Pipeline stages**:
+
+| Pass | Input | Output | Method |
+|------|-------|--------|--------|
+| 1. Structure Extraction | Raw text | `ProcedureOverview` (IDs, names, action types) | Constrained JSON |
+| 2. Step Detailing | Text + overview | `ProcedureStep` per step (full details) | Constrained JSON per step |
+| 3. Condition & Tool Refinement | Detailed steps | Structured conditions, validated tools | Constrained JSON + registry validation |
+| 4. Validation & Refinement Loop | Assembled procedure | Error-free `Procedure` | Pydantic validation + LLM fixes (up to N rounds) |
+
+See [Ingesting Plain English SOPs](#ingesting-plain-english-sops) for usage details.
+
 ---
 
 ## YAML Procedure Format
@@ -305,6 +392,83 @@ next_step: earlier_step          # Back-edge: runner re-ticks from root
 ```yaml
 action: end
 ```
+
+### Fine-Grained Format
+
+The fine-grained format adds explicit, machine-readable fields that give the compiler richer, less ambiguous input. All fine-grained fields are **optional** — the compiler checks for them first, then falls back to legacy parsing.
+
+**Structured conditions** (instead of string conditions):
+```yaml
+conditions:
+  - condition:
+      field: order_date
+      operator: within_days
+      value: 30
+    next_step: process_refund
+  - condition:
+      field: order_status
+      operator: eq
+      value: processing
+    next_step: cancel_order
+```
+
+**Explicit tool arg_mappings** (instead of inferred):
+```yaml
+tool_configs:
+  - name: lookup_order
+    arg_mappings:
+      - param: order_id
+        source: order_id
+    result_key: order_data
+  - name: search_orders
+    arg_mappings:
+      - param: customer_id
+        source: customer_id
+    result_key: search_results
+```
+
+**Rich extract_fields** (instead of flat required_info):
+```yaml
+extract_fields:
+  - key: order_id
+    description: "The order number (e.g., ORD-123)"
+    examples: ["ORD-123", "ORD-789"]
+  - key: merchant_name
+    description: "Store or brand name"
+    examples: ["TechMart", "SportZone"]
+required_fields: [order_id]
+```
+
+**Detection keywords for inform options** (instead of implicit label matching):
+```yaml
+options:
+  - label: "Customer accepts store credit"
+    next_step: offer_store_credit
+    detection_keywords: ["credit", "store", "accept", "yes", "fine", "ok"]
+  - label: "Customer requests escalation"
+    next_step: escalate_case
+    detection_keywords: ["escalat", "supervisor", "manager", "not satisf"]
+```
+
+**Explicit classify_categories** (instead of implicit fallback):
+```yaml
+action: evaluate
+classify_categories: [fraud_confirmed, false_positive, needs_review]
+classify_result_key: triage_result
+conditions:
+  - condition_description: "Evidence strongly suggests fraud"
+    next_step: flag_account
+  - condition_description: "Appears to be a false positive"
+    next_step: close_alert
+```
+
+| Aspect | Legacy | Fine-Grained |
+|--------|--------|-------------|
+| Conditions | `if: "order_date within 30 days"` (string) | `condition: {field, operator, value}` (structured) |
+| Tool args | Inferred from function signature | Explicit `arg_mappings: [{param, source}]` |
+| Extract fields | `required_info: [field1]` (flat strings) | `extract_fields: [{key, description, examples}]` |
+| Inform options | Label-based keyword guessing | `detection_keywords: [kw1, kw2]` |
+| LLM classification | Implicit (unparseable string → LLM) | Explicit `classify_categories` + `classify_result_key` |
 
 ---
 
@@ -407,6 +571,30 @@ The condition parser supports these patterns via regex matching:
 
 **Unparseable fallback**: Any condition that doesn't match these patterns returns `None`. The step compiler then uses `LLMClassifyNode` instead, with categories derived from the condition's `next_step` values. This handles subjective conditions like fraud risk assessment.
 
+### Structured Conditions (Fine-Grained)
+
+The fine-grained format uses `StructuredCondition` objects instead of strings. These are already parsed — no regex needed.
+
+```python
+from bt_engine.compiler.condition_parser import parse_structured_condition
+
+# From a Pydantic model
+from bt_engine.compiler.schemas import StructuredCondition, ConditionOperator
+cond = StructuredCondition(field="risk_score", operator=ConditionOperator.gte, value=80)
+pred = parse_structured_condition(cond)
+assert pred({"alert_data": {"risk_score": 92}}) is True
+
+# From a plain dict (e.g., loaded from YAML)
+pred = parse_structured_condition({"field": "severity", "operator": "eq", "value": "high"})
+assert pred({"alert_data": {"severity": "high"}}) is True
+```
+
+**Supported operators**: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `in`, `not_in`, `within_days`, `outside_days`, `contains`.
+
+**Field resolution**: Uses `field_path` if provided (e.g., `"alert_data.severity"`), otherwise falls back to `FIELD_LOCATIONS` lookup, then top-level `bb_dict`.
+
+**Compiler behavior**: The step compiler checks each condition branch for a `condition` object first. If found, it uses `parse_structured_condition()`. If not, it falls back to `parse_condition()` on the legacy `if` string.
+
 ---
 
 ## Cycle Handling
@@ -458,6 +646,65 @@ def create_default_registry() -> ToolRegistry:
 
 ---
 
+## Ingesting Plain English SOPs
+
+The ingestion pipeline (`bt_engine/compiler/ingestion.py`) converts plain English procedure documents into validated, fine-grained YAML procedures using a multi-pass LLM pipeline with constrained decoding.
+
+### Usage
+
+**Python API**:
+```python
+from bt_engine.compiler.ingestion import ProcedureIngester
+from bt_engine.compiler.tool_registry import create_default_registry
+
+ingester = ProcedureIngester(registry=create_default_registry())
+
+# Ingest to Procedure object
+procedure = await ingester.ingest("""
+When a customer contacts us about a refund:
+1. First, collect their order information - order number, store name, or item description
+2. Look up the order in our system
+3. Check if the order is eligible for a refund (within 30 days, delivered status)
+4. If eligible, process the refund
+5. If outside the return window, offer store credit or escalation
+6. Close the case with a summary
+""")
+
+# Ingest directly to YAML file
+path = await ingester.ingest_to_yaml(plain_text, "procedures/new_refund.yaml")
+```
+
+**REST API**:
+```bash
+curl -X POST http://localhost:8000/api/procedures/ingest \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "When a customer contacts us about a refund...",
+    "output_format": "yaml"
+  }'
+```
+
+### Pipeline Details
+
+**Pass 1 — Structure Extraction**: Identifies the procedure's ID, name, domain, trigger intents, available tools, and a list of steps with their IDs, names, and action types. Uses `text/x.enum` for action type classification.
+
+**Pass 2 — Step Detailing**: For each step, extracts full details appropriate to its action type — extract_fields for collect_info, tool configs for tool_call, condition branches for evaluate, options for inform.
+
+**Pass 3 — Condition & Tool Refinement**: Attempts to convert natural language conditions into `StructuredCondition` objects. Validates tool names against the registry and auto-populates arg_mappings from function signatures.
+
+**Pass 4 — Validation & Refinement Loop**: Validates the assembled procedure (step references, tool names, condition fields). If errors are found, feeds them back to the LLM for correction. Loops up to `max_refinement_rounds` (default: 3).
+
+### Constrained Decoding
+
+All LLM calls in the pipeline use Google GenAI's constrained decoding:
+
+- **`response_mime_type="application/json"` + `response_schema`**: Forces the LLM output to match a Pydantic schema exactly. Used for all structured extraction (procedure overview, step details, conditions).
+- **`response_mime_type="text/x.enum"` + `response_schema`**: Forces the LLM output to be one of the enum values. Used for action type classification and `LLMClassifyNode`.
+
+This eliminates hallucination risks — the LLM cannot produce invalid field names, unknown operators, or malformed JSON.
+
+---
+
 ## Design Decisions
 
 ### Why regex-based condition parsing?
@@ -479,3 +726,19 @@ Fraud risk assessment conditions like "multiple high-confidence fraud indicators
 ### Why keep hand-coded trees?
 
 The hand-coded trees in `bt_engine/trees/` serve as **reference implementations** for equivalence testing. They're not used in production (main.py uses the compiler), but they validate that compiled trees route identically for all test scenarios.
+
+### Why constrained decoding instead of free-text + parsing?
+
+Free-text LLM output requires fuzzy string matching, JSON repair, and schema validation — all error-prone. Google GenAI's `response_schema` (Pydantic) and `text/x.enum` guarantee valid output at the API level. The LLM literally cannot produce an invalid operator or unknown action type. This eliminates an entire class of bugs.
+
+### Why a multi-pass ingestion pipeline?
+
+A single-pass "generate the whole procedure" approach produces lower quality output because it asks the LLM to do too many things at once. Multi-pass allows each stage to focus on one concern (structure, details, refinement) with targeted constrained schemas. It also enables targeted error correction — Pass 4 can fix specific validation errors without regenerating the whole procedure.
+
+### Why backward compatibility with legacy format?
+
+Existing YAML procedures shouldn't break when the fine-grained format is introduced. The compiler checks for structured fields first (`condition` object, `extract_fields`, `tool_configs`, `detection_keywords`), then falls back to legacy parsing (`if` strings, `required_info`, tool name strings, label-based routing). This allows gradual migration.
+
+### Why `LLMClassifyNode` has a free-text fallback?
+
+Not all environments support `text/x.enum` constrained decoding (older model versions, alternative providers). The node tries constrained decoding first for maximum reliability, then falls back to the original free-text-with-string-matching approach if it fails. This maintains compatibility while improving accuracy where possible.

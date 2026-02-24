@@ -19,7 +19,7 @@ from bt_engine.nodes import (
     ToolActionNode,
     UserInputNode,
 )
-from bt_engine.compiler.condition_parser import parse_condition
+from bt_engine.compiler.condition_parser import parse_condition, parse_structured_condition
 from bt_engine.compiler.tool_registry import ToolRegistry
 
 
@@ -44,22 +44,46 @@ def compile_collect_info(
     """
     step_id = step["id"]
 
-    # Determine extract keys based on procedure domain
-    extract_keys = step.get("extract_keys")
-    if not extract_keys:
-        extract_keys = _infer_extract_keys(step)
+    # Fine-grained: use extract_fields if available
+    extract_fields = step.get("extract_fields")
+    if extract_fields and isinstance(extract_fields, list) and len(extract_fields) > 0:
+        # Fine-grained format: extract_fields is a list of dicts with key/description/examples
+        if isinstance(extract_fields[0], dict):
+            extract_keys = [ef["key"] for ef in extract_fields]
+            field_descriptions = ", ".join(
+                f"{ef['key']} ({ef.get('description', '')})" for ef in extract_fields
+            )
+            extract_prompt = (
+                f"Extract the following fields from the customer message: {field_descriptions}. "
+                f"{step['instruction']}"
+            )
+        else:
+            # extract_fields is already a list of strings (legacy-compatible)
+            extract_keys = extract_fields
+            extract_prompt = (
+                f"Extract relevant details from the customer message. "
+                f"Look for: order ID, store/merchant name, item description, "
+                f"approximate dollar amount, time references, and any other identifiers. "
+                f"{step['instruction']}"
+            )
+    else:
+        # Legacy format
+        extract_keys = step.get("extract_keys")
+        if not extract_keys:
+            extract_keys = _infer_extract_keys(step)
+        extract_prompt = (
+            f"Extract relevant details from the customer message. "
+            f"Look for: order ID, store/merchant name, item description, "
+            f"approximate dollar amount, time references, and any other identifiers. "
+            f"{step['instruction']}"
+        )
 
     root = py_trees.composites.Sequence(step_id, memory=True)
 
     # Initial extraction
     extract = LLMExtractNode(
         f"extract_{step_id}",
-        prompt_template=(
-            f"Extract relevant details from the customer message. "
-            f"Look for: order ID, store/merchant name, item description, "
-            f"approximate dollar amount, time references, and any other identifiers. "
-            f"{step['instruction']}"
-        ),
+        prompt_template=extract_prompt,
         extract_keys=extract_keys,
     )
 
@@ -120,11 +144,37 @@ def compile_tool_call(
 ) -> py_trees.behaviour.Behaviour:
     """Compile a tool_call step.
 
+    Supports fine-grained tool_configs (list of ToolConfig dicts with
+    explicit arg_mappings) or legacy format (tool name strings).
+
     Single tool: Selector with success/failure paths.
     Multiple tools: Selector with condition-guarded paths per tool.
     """
     step_id = step["id"]
-    tools_list = step.get("tools", [step["tool"]] if step.get("tool") else [])
+
+    # Fine-grained format: tool_configs with explicit arg_mappings
+    tool_configs = step.get("tool_configs")
+    if tool_configs and isinstance(tool_configs, list) and len(tool_configs) > 0:
+        # Convert tool_configs to legacy format for compilation,
+        # but apply explicit arg_mappings and fixed_args
+        for tc in tool_configs:
+            if isinstance(tc, dict) and tc.get("arg_mappings"):
+                # Override step-level arg_keys with explicit mappings
+                step["arg_keys"] = {
+                    m["param"]: m["source"] for m in tc["arg_mappings"]
+                }
+            if isinstance(tc, dict) and tc.get("fixed_args"):
+                step.setdefault("fixed_args", {})
+                step["fixed_args"].update(tc["fixed_args"])
+            if isinstance(tc, dict) and tc.get("result_key"):
+                step["result_key"] = tc["result_key"]
+
+        tools_list = [
+            tc["name"] if isinstance(tc, dict) else tc
+            for tc in tool_configs
+        ]
+    else:
+        tools_list = step.get("tools", [step["tool"]] if step.get("tool") else [])
 
     if len(tools_list) > 1:
         return _compile_multi_tool(step, tools_list, all_steps, registry, compile_step)
@@ -309,16 +359,33 @@ def compile_evaluate(
 ) -> py_trees.behaviour.Behaviour:
     """Compile an evaluate step.
 
-    If conditions are parseable -> ConditionNode routing.
-    If unparseable -> LLMClassifyNode + ConditionNode routing.
+    Supports three formats:
+    1. Fine-grained structured conditions (StructuredCondition objects/dicts)
+    2. Legacy string conditions that are parseable -> ConditionNode routing
+    3. Unparseable conditions -> LLMClassifyNode + ConditionNode routing
+
+    Also supports explicit classify_categories for LLM-classified steps.
     """
     step_id = step["id"]
     conditions = step.get("conditions", [])
+
+    # Check for explicit classify_categories (fine-grained format)
+    classify_categories = step.get("classify_categories")
+    if classify_categories and isinstance(classify_categories, list) and len(classify_categories) > 0:
+        return _compile_evaluate_with_classify(step_id, step, conditions, all_steps, compile_step)
 
     # Try to parse all conditions
     parsed = []
     all_parseable = True
     for cond in conditions:
+        # Fine-grained format: condition is a structured object
+        structured = cond.get("condition")
+        if structured and isinstance(structured, dict) and "field" in structured:
+            predicate = parse_structured_condition(structured)
+            parsed.append((cond, predicate))
+            continue
+
+        # Legacy format: condition is a string
         cond_str = cond.get("if", "")
         predicate = parse_condition(cond_str)
         parsed.append((cond, predicate))
@@ -457,29 +524,39 @@ def compile_inform(
 
             opt_path = py_trees.composites.Sequence(f"{step_id}_opt_{i}", memory=True)
 
-            # Use keyword matching for option routing (matching hand-coded pattern)
-            label = opt.get("label", "").lower()
-            escalation_keywords = ["escalat", "supervisor", "manager", "not satisf", "unacceptable"]
-            if any(kw in label for kw in escalation_keywords):
-                # This is an escalation option — check for escalation keywords in user message
+            # Fine-grained: use detection_keywords if provided
+            detection_keywords = opt.get("detection_keywords")
+            if detection_keywords and isinstance(detection_keywords, list) and len(detection_keywords) > 0:
                 opt_path.add_children([
                     ConditionNode(
-                        f"wants_{step_id}_opt_{i}",
-                        lambda bb, kws=escalation_keywords: any(
-                            kw in (bb.get("user_message", "") or "").lower() for kw in kws
+                        f"detect_{step_id}_opt_{i}",
+                        lambda bb, kws=detection_keywords: any(
+                            kw.lower() in (bb.get("user_message", "") or "").lower() for kw in kws
                         ),
                     ),
                 ])
             else:
-                # Default/acceptance option — check that escalation keywords are NOT present
-                opt_path.add_children([
-                    ConditionNode(
-                        f"accepts_{step_id}_opt_{i}",
-                        lambda bb, kws=escalation_keywords: not any(
-                            kw in (bb.get("user_message", "") or "").lower() for kw in kws
+                # Legacy: use keyword matching for option routing (matching hand-coded pattern)
+                label = opt.get("label", "").lower()
+                escalation_keywords = ["escalat", "supervisor", "manager", "not satisf", "unacceptable"]
+                if any(kw in label for kw in escalation_keywords):
+                    opt_path.add_children([
+                        ConditionNode(
+                            f"wants_{step_id}_opt_{i}",
+                            lambda bb, kws=escalation_keywords: any(
+                                kw in (bb.get("user_message", "") or "").lower() for kw in kws
+                            ),
                         ),
-                    ),
-                ])
+                    ])
+                else:
+                    opt_path.add_children([
+                        ConditionNode(
+                            f"accepts_{step_id}_opt_{i}",
+                            lambda bb, kws=escalation_keywords: not any(
+                                kw in (bb.get("user_message", "") or "").lower() for kw in kws
+                            ),
+                        ),
+                    ])
 
             next_subtree = compile_step(next_step_id, all_steps)
             if next_subtree is not None:
