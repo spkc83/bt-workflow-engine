@@ -73,8 +73,12 @@ bt-workflow-engine/
 │   └── seed.py                   # Mock data seeding
 ├── procedures/                   # YAML procedure definitions
 │   ├── customer_service_refund.yaml
+│   ├── customer_service_refund_finegrained.yaml  # Fine-grained format example
 │   ├── customer_service_complaint.yaml
 │   └── fraud_ops_alert_triage.yaml
+├── examples/                     # Usage examples
+│   ├── sample_sop.txt            # Plain English SOP for ingestion demo
+│   └── ingest_demo.py            # LLM-powered ingestion demo script
 ├── tests/                        # Test suite (169 tests)
 │   ├── test_bt_nodes.py          # Node unit tests
 │   ├── test_bt_runner.py         # Runner integration tests
@@ -127,13 +131,14 @@ pytest tests/test_schemas.py tests/test_ingestion.py tests/test_constrained.py -
 
 ## Workflows
 
-Three built-in workflows are provided as YAML procedures:
+Four built-in workflows are provided as YAML procedures:
 
-| Workflow | File | Intents | Steps |
-|----------|------|---------|-------|
-| **Refund** | `customer_service_refund.yaml` | refund, return, money back, cancel order | 9 |
-| **Complaint** | `customer_service_complaint.yaml` | complaint, unhappy, dissatisfied | 6 |
-| **Fraud Triage** | `fraud_ops_alert_triage.yaml` | fraud alert, suspicious activity | 9 |
+| Workflow | File | Format | Intents | Steps |
+|----------|------|--------|---------|-------|
+| **Refund** | `customer_service_refund.yaml` | Legacy | refund, return, money back, cancel order | 9 |
+| **Refund (Fine-Grained)** | `customer_service_refund_finegrained.yaml` | Fine-grained | refund, return, money back, cancel order | 11 |
+| **Complaint** | `customer_service_complaint.yaml` | Legacy | complaint, unhappy, dissatisfied | 6 |
+| **Fraud Triage** | `fraud_ops_alert_triage.yaml` | Legacy | fraud alert, suspicious activity | 9 |
 
 ### Creating a New Workflow
 
@@ -141,39 +146,103 @@ There are two ways to create a new workflow:
 
 **Option A: Ingest from plain English** (recommended for new procedures):
 
-Use the ingestion pipeline to convert a plain English SOP into a structured YAML procedure. The LLM pipeline handles step identification, condition structuring, tool mapping, and validation automatically. See [Ingest a Plain English SOP](#ingest-a-plain-english-sop) above.
+Use the ingestion pipeline to convert a plain English SOP into a structured YAML procedure. The LLM pipeline handles step identification, condition structuring, tool mapping, and validation automatically. See [Ingest a Plain English SOP](#ingest-a-plain-english-sop) below, or run the demo script:
 
-**Option B: Write YAML manually** (for precise control):
+```bash
+# Ingest the included sample SOP (requires GOOGLE_API_KEY)
+python examples/ingest_demo.py
 
-1. Create a YAML file in `procedures/`:
+# Ingest your own SOP
+python examples/ingest_demo.py path/to/your_sop.txt --output procedures/my_proc.yaml
+```
+
+**Option B: Write fine-grained YAML** (recommended for precise control):
+
+The fine-grained format provides structured conditions, explicit tool arg mappings, extract field descriptions, and detection keywords. See `procedures/customer_service_refund_finegrained.yaml` for a full example.
 
 ```yaml
 procedure:
   id: my_workflow
   name: "My Custom Workflow"
-  description: "Handles XYZ requests"
+  version: "2.0"
+  domain: customer_service
+  trigger_intents: [xyz_request]
+  available_tools: [lookup_order, update_case_status]
+  data_context: [order_id, customer_id]
+
+  steps:
+    - id: collect
+      name: "Collect Details"
+      action: collect_info
+      instruction: "Ask for order details."
+      extract_fields:
+        - key: order_id
+          description: "The order number"
+          examples: ["ORD-123"]
+      required_fields: [order_id]
+      next_step: lookup
+
+    - id: lookup
+      name: "Look Up Order"
+      action: tool_call
+      instruction: "Find the order."
+      tools:
+        - name: lookup_order
+          arg_mappings:
+            - param: order_id
+              source: order_id
+          result_key: order_data
+      on_success: check
+      on_failure: end
+
+    - id: check
+      name: "Evaluate Eligibility"
+      action: evaluate
+      conditions:
+        - condition:
+            field: order_date
+            operator: within_days
+            value: 30
+          next_step: approve
+        - condition:
+            field: order_date
+            operator: outside_days
+            value: 30
+          next_step: deny
+
+    - id: approve
+      action: end
+      instruction: "Approved."
+    - id: deny
+      action: end
+      instruction: "Denied."
+```
+
+**Option C: Write legacy YAML** (simple format, string-based conditions):
+
+```yaml
+procedure:
+  id: my_workflow
+  name: "My Custom Workflow"
   version: "1.0"
-  trigger_intents:
-    - xyz_request
-    - do_xyz
+  trigger_intents: [xyz_request]
 
   steps:
     - id: greet
       instruction: "Greet the customer and ask for details."
       action: collect_info
-      required_info:
-        - request_details
+      required_info: [request_details]
       next_step: process
 
     - id: process
-      instruction: "Process the request using the tool."
+      instruction: "Process the request."
       action: tool_call
       tool: update_case_status
       on_success: close
       on_failure: escalate
 
     - id: close
-      instruction: "Confirm completion and close the case."
+      instruction: "Confirm completion."
       action: tool_call
       tool: update_case_status
       on_success: end
@@ -300,7 +369,7 @@ The test suite validates the full stack:
 - **Node tests** (16): Each node type in isolation
 - **Runner tests** (10): Multi-turn execution, branching, tracing
 - **Tool tests** (13): All 14 tool functions against SQLite
-- **Compiler tests** (45): Condition parser, tool registry, YAML parser, full compilation, tree manager
+- **Compiler tests** (45): Condition parser, tool registry, YAML parser, full compilation, tree manager (includes fine-grained format)
 - **Equivalence tests** (16): Compiled trees produce same routing as hand-coded trees
 - **Schema tests** (21): Pydantic models, structured condition predicates, serialization round-trips
 - **Constrained decoding tests** (8): `generate_structured`, `classify_enum`, `LLMClassifyNode` with constrained/fallback

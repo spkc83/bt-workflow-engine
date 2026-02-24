@@ -153,7 +153,12 @@ def compile_tool_call(
     step_id = step["id"]
 
     # Fine-grained format: tool_configs with explicit arg_mappings
+    # Also detect when 'tools' contains dicts (fine-grained YAML uses tools: [{name: ...}])
     tool_configs = step.get("tool_configs")
+    if not tool_configs:
+        raw_tools = step.get("tools", [])
+        if raw_tools and isinstance(raw_tools, list) and isinstance(raw_tools[0], dict):
+            tool_configs = raw_tools
     if tool_configs and isinstance(tool_configs, list) and len(tool_configs) > 0:
         # Convert tool_configs to legacy format for compilation,
         # but apply explicit arg_mappings and fixed_args
@@ -164,7 +169,8 @@ def compile_tool_call(
                     m["param"]: m["source"] for m in tc["arg_mappings"]
                 }
             if isinstance(tc, dict) and tc.get("fixed_args"):
-                step.setdefault("fixed_args", {})
+                if step.get("fixed_args") is None:
+                    step["fixed_args"] = {}
                 step["fixed_args"].update(tc["fixed_args"])
             if isinstance(tc, dict) and tc.get("result_key"):
                 step["result_key"] = tc["result_key"]
