@@ -12,6 +12,8 @@ load_dotenv()
 from database import init_db, query_all, seed_all
 from bt_engine.runner import BTRunner
 from bt_engine.compiler.tree_manager import TreeManager
+from bt_engine.compiler.ingestion import ProcedureIngester
+from bt_engine.compiler.tool_registry import create_default_registry
 from config import get_client, get_model_name
 
 # ---------------------------------------------------------------------------
@@ -120,6 +122,18 @@ class ChatResponse(BaseModel):
     session_id: str
     status: str
     intent: str | None = None
+
+
+class IngestRequest(BaseModel):
+    text: str
+    output_format: str = "yaml"  # "yaml" or "json"
+    output_path: str | None = None  # optional file path for YAML output
+
+
+class IngestResponse(BaseModel):
+    procedure: dict
+    yaml_path: str | None = None
+    validation_errors: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +258,35 @@ async def list_sessions() -> dict:
             "workflow_status": bb.get("workflow_status", ""),
         })
     return {"sessions": sessions}
+
+
+@app.post("/api/procedures/ingest", response_model=IngestResponse)
+async def ingest_procedure(request: IngestRequest) -> IngestResponse:
+    """Convert plain English SOP to structured YAML procedure."""
+    registry = create_default_registry()
+    ingester = ProcedureIngester(registry=registry)
+
+    try:
+        procedure = await ingester.ingest(request.text)
+        validation_errors = ingester._validate_procedure(procedure)
+
+        yaml_path = None
+        if request.output_path:
+            path = await ingester.ingest_to_yaml(request.text, request.output_path)
+            yaml_path = str(path)
+        elif request.output_format == "yaml":
+            # Default output path based on procedure ID
+            default_path = f"procedures/{procedure.id}.yaml"
+            path = await ingester.ingest_to_yaml(request.text, default_path)
+            yaml_path = str(path)
+
+        return IngestResponse(
+            procedure=procedure.model_dump(mode="json", exclude_none=True),
+            yaml_path=yaml_path,
+            validation_errors=validation_errors,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {e}")
 
 
 @app.post("/api/procedures/reload")

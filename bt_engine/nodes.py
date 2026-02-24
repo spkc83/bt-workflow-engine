@@ -462,6 +462,10 @@ class LogNode(py_trees.behaviour.Behaviour):
 class LLMClassifyNode(py_trees.behaviour.Behaviour):
     """Classify user input into a category using LLM.
 
+    Uses constrained enum decoding (text/x.enum) when available for
+    guaranteed valid classification. Falls back to free-text matching
+    if constrained decoding fails.
+
     Writes the classification result to bb_dict[result_key].
     """
 
@@ -493,18 +497,10 @@ class LLMClassifyNode(py_trees.behaviour.Behaviour):
 
 User message: "{user_message}"
 
-Classify into exactly ONE of these categories: {categories_str}
+Classify into exactly ONE of these categories: {categories_str}"""
 
-Return ONLY the category name, nothing else."""
-
-            response_text = _run_async(self._call_llm(prompt))
-            classification = response_text.strip().lower().replace('"', '').replace("'", "")
-
-            # Match to closest category
-            for cat in self.categories:
-                if cat.lower() in classification:
-                    classification = cat
-                    break
+            # Try constrained enum decoding first
+            classification = _run_async(self._classify_constrained(prompt))
 
             bb_dict = _bb_get(self.bb, "bb_dict", {})
             bb_dict[self.result_key] = classification
@@ -517,10 +513,34 @@ Return ONLY the category name, nothing else."""
             logger.error(f"[{self.name}] Classification failed: {e}")
             return py_trees.common.Status.FAILURE
 
-    async def _call_llm(self, prompt: str) -> str:
+    async def _classify_constrained(self, prompt: str) -> str:
+        """Classify using constrained enum decoding, with free-text fallback."""
+        try:
+            from bt_engine.compiler.llm_utils import classify_enum, make_dynamic_enum
+            CategoryEnum = make_dynamic_enum("Category", self.categories)
+            result = await classify_enum(prompt, CategoryEnum)
+            # Validate result is actually one of our categories
+            if result in self.categories:
+                return result
+            # Fuzzy match if constrained output doesn't exactly match
+            for cat in self.categories:
+                if cat.lower() in result.lower():
+                    return cat
+            return result
+        except Exception:
+            logger.debug(f"[{self.name}] Constrained decoding failed, falling back to free-text")
+            return await self._classify_freetext(prompt)
+
+    async def _classify_freetext(self, prompt: str) -> str:
+        """Fallback: free-text classification with string matching."""
         client = get_client()
+        full_prompt = prompt + "\n\nReturn ONLY the category name, nothing else."
         response = await client.aio.models.generate_content(
             model=get_model_name(),
-            contents=prompt,
+            contents=full_prompt,
         )
-        return response.text or ""
+        response_text = (response.text or "").strip().lower().replace('"', '').replace("'", "")
+        for cat in self.categories:
+            if cat.lower() in response_text:
+                return cat
+        return response_text

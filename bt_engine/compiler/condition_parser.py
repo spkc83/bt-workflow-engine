@@ -1,6 +1,10 @@
 """Condition parser: converts YAML condition strings into Python predicate callables.
 
-Supports a small regex-based grammar for deterministic conditions:
+Supports two input formats:
+  1. StructuredCondition objects (from fine-grained YAML / ingestion pipeline)
+  2. Legacy string-based conditions with regex grammar
+
+String grammar:
   field == value, field >= number, field in [vals], field within N days,
   field outside N days, AND/OR combinators.
 
@@ -165,3 +169,96 @@ def _parse_single_condition(cond: str) -> Callable[[dict], bool] | None:
 
     # Unparseable — return None to signal LLM classification needed
     return None
+
+
+# ---------------------------------------------------------------------------
+# Structured condition support (fine-grained format)
+# ---------------------------------------------------------------------------
+
+def parse_structured_condition(cond) -> Callable[[dict], bool]:
+    """Convert a StructuredCondition object (or dict) to a Python predicate.
+
+    Unlike parse_condition() which returns None for unparseable strings,
+    this always returns a valid predicate because the condition is already
+    fully specified by the LLM with constrained decoding.
+
+    Accepts either a StructuredCondition Pydantic model or a plain dict
+    with the same fields (field, operator, value, field_path).
+    """
+    # Accept both Pydantic model and dict
+    if hasattr(cond, "model_dump"):
+        cond = cond.model_dump()
+
+    field = cond["field"]
+    operator = cond["operator"]
+    value = cond["value"]
+    field_path = cond.get("field_path")
+
+    def _resolve(bb: dict):
+        """Resolve the field value from the blackboard."""
+        # If explicit field_path is provided, use it
+        if field_path:
+            parts = field_path.split(".")
+            obj = bb
+            for part in parts:
+                if isinstance(obj, dict):
+                    obj = obj.get(part)
+                else:
+                    return None
+            return obj
+        # Otherwise use the standard FIELD_LOCATIONS lookup
+        return _resolve_field(bb, field)
+
+    # Map operator to predicate
+    if operator == "eq":
+        def pred(bb, r=_resolve, v=value):
+            actual = r(bb)
+            try:
+                return float(actual) == float(v)
+            except (TypeError, ValueError):
+                return str(actual or "").lower() == str(v).lower()
+        return pred
+
+    elif operator == "neq":
+        def pred(bb, r=_resolve, v=value):
+            actual = r(bb)
+            try:
+                return float(actual) != float(v)
+            except (TypeError, ValueError):
+                return str(actual or "").lower() != str(v).lower()
+        return pred
+
+    elif operator == "gt":
+        return lambda bb, r=_resolve, v=value: (r(bb) or 0) > float(v)
+
+    elif operator == "gte":
+        return lambda bb, r=_resolve, v=value: (r(bb) or 0) >= float(v)
+
+    elif operator == "lt":
+        return lambda bb, r=_resolve, v=value: (r(bb) or 0) < float(v)
+
+    elif operator == "lte":
+        return lambda bb, r=_resolve, v=value: (r(bb) or 0) <= float(v)
+
+    elif operator == "in":
+        vals = value if isinstance(value, list) else [value]
+        lower_vals = tuple(str(v).lower() for v in vals)
+        return lambda bb, r=_resolve, vs=lower_vals: str(r(bb) or "").lower() in vs
+
+    elif operator == "not_in":
+        vals = value if isinstance(value, list) else [value]
+        lower_vals = tuple(str(v).lower() for v in vals)
+        return lambda bb, r=_resolve, vs=lower_vals: str(r(bb) or "").lower() not in vs
+
+    elif operator == "within_days":
+        return lambda bb, r=_resolve, d=value: (r(bb) or 999) <= int(d)
+
+    elif operator == "outside_days":
+        return lambda bb, r=_resolve, d=value: (r(bb) or 0) > int(d)
+
+    elif operator == "contains":
+        return lambda bb, r=_resolve, v=value: str(v).lower() in str(r(bb) or "").lower()
+
+    else:
+        # Unknown operator — always True as safe fallback
+        return lambda bb: True
