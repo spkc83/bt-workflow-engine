@@ -1,0 +1,25 @@
+Password Reset Procedure for IT Help Desk
+
+When a user contacts the help desk requesting a password reset:
+
+1. Greet the user and verify their identity. Ask for their employee ID and
+   the email address associated with their account. Both are required before
+   proceeding.
+
+2. Look up the user's account using the employee ID. If the account is not
+   found, inform the user and ask them to verify the information.
+
+3. Check the account status:
+   - If the account is locked (more than 5 failed attempts), unlock it first
+     before resetting the password.
+   - If the account is disabled, inform the user that they need to contact
+     their manager to re-enable it and escalate the ticket.
+   - If the account is active, proceed directly to the password reset.
+
+4. Reset the password and generate a temporary password. Send the temporary
+   password to the user's registered email address.
+
+5. Inform the user that a temporary password has been sent to their email.
+   They must change it within 24 hours. Ask if they need anything else.
+
+6. Close the ticket with the resolution details.

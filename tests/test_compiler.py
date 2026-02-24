@@ -336,7 +336,7 @@ class TestTreeManager:
 
     def test_load_all(self, manager):
         assert len(manager.get_all_intents()) > 0
-        assert len(manager.get_all_procedures()) == 3
+        assert len(manager.get_all_procedures()) == 4
 
     def test_get_tree_factory_refund(self, manager):
         factory = manager.get_tree_factory("refund")
@@ -375,7 +375,7 @@ class TestTreeManager:
     def test_reload(self, manager):
         """Reload should clear and re-populate."""
         manager.reload_all()
-        assert len(manager.get_all_procedures()) == 3
+        assert len(manager.get_all_procedures()) == 4
 
     def test_all_procedures_metadata(self, manager):
         procs = manager.get_all_procedures()
