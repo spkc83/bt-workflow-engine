@@ -342,6 +342,8 @@ class ToolActionNode(py_trees.behaviour.Behaviour):
                 value = bb_dict.get(bb_key)
                 if value is not None:
                     kwargs[param_name] = value
+                else:
+                    logger.debug(f"[{self.name}] Blackboard key '{bb_key}' is None, skipping")
 
             # Add fixed args
             kwargs.update(self.fixed_args)

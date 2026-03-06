@@ -62,6 +62,10 @@ async def classify_intent(message: str) -> str:
     prompt = f"""Classify this customer message into exactly ONE of these categories:
 {intent_list}
 
+IMPORTANT: Only classify as a workflow intent if the customer is actively requesting
+that action (e.g., wants a refund, has a complaint, reporting fraud). General questions
+about policies, procedures, hours, or how things work should be classified as "general".
+
 Message: "{message}"
 
 Return ONLY the category name, nothing else."""
