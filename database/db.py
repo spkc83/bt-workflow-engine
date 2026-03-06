@@ -159,6 +159,35 @@ CREATE TABLE IF NOT EXISTS knowledge_articles (
     content TEXT,
     relevance_score REAL DEFAULT 0.0
 );
+
+-- Customer Memories (cross-session context)
+CREATE TABLE IF NOT EXISTS customer_memories (
+    memory_id TEXT PRIMARY KEY,
+    customer_id TEXT NOT NULL,
+    session_id TEXT,
+    memory_type TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    data JSON,
+    created_at TEXT NOT NULL,
+    expires_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_memories_customer ON customer_memories(customer_id);
+
+-- Sessions (pause & resume)
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id TEXT PRIMARY KEY,
+    customer_id TEXT,
+    procedure_id TEXT,
+    intent TEXT,
+    blackboard_state JSON,
+    conversation_history JSON,
+    tree_status TEXT DEFAULT 'RUNNING',
+    current_step TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_customer ON sessions(customer_id);
 """
 
 

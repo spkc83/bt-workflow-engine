@@ -141,6 +141,10 @@ class ProcedureStep(BaseModel):
     # universal navigation
     next_step: str = ""
 
+    # conversational flow control
+    await_input: bool | None = None   # None = use default logic
+    save_memory: bool = False
+
 
 class Procedure(BaseModel):
     """Top-level procedure definition with optional fine-grained metadata."""

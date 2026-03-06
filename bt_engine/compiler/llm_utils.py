@@ -16,7 +16,7 @@ from typing import TypeVar
 from google.genai import types
 from pydantic import BaseModel
 
-from config import get_client, get_model_name
+from config import get_genai_client, get_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ async def generate_structured(
     Returns:
         A validated instance of the schema.
     """
-    client = get_client()
+    client = get_genai_client()
     model_name = model or get_model_name()
 
     config_kwargs: dict = {
@@ -85,7 +85,7 @@ async def classify_enum(
     Returns:
         The enum value string (not the enum member name).
     """
-    client = get_client()
+    client = get_genai_client()
     model_name = model or get_model_name()
 
     config_kwargs: dict = {

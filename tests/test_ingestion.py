@@ -299,7 +299,7 @@ class TestIngestionPipeline:
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-        with patch("bt_engine.compiler.llm_utils.get_client", return_value=mock_client), \
+        with patch("bt_engine.compiler.llm_utils.get_genai_client", return_value=mock_client), \
              patch("bt_engine.compiler.llm_utils.get_model_name", return_value="test"):
             result = await ingester._pass1_structure("Handle refund requests for customers.")
 
@@ -338,7 +338,7 @@ class TestIngestionPipeline:
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(side_effect=mock_generate)
 
-        with patch("bt_engine.compiler.llm_utils.get_client", return_value=mock_client), \
+        with patch("bt_engine.compiler.llm_utils.get_genai_client", return_value=mock_client), \
              patch("bt_engine.compiler.llm_utils.get_model_name", return_value="test"):
             result = await ingester.ingest("Handle refund requests.")
 
@@ -372,7 +372,7 @@ class TestIngestionPipeline:
 
         output_path = tmp_path / "test_proc.yaml"
 
-        with patch("bt_engine.compiler.llm_utils.get_client", return_value=mock_client), \
+        with patch("bt_engine.compiler.llm_utils.get_genai_client", return_value=mock_client), \
              patch("bt_engine.compiler.llm_utils.get_model_name", return_value="test"):
             path = await ingester.ingest_to_yaml("Handle refunds.", str(output_path))
 
@@ -412,7 +412,7 @@ class TestIngestionPipeline:
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-        with patch("bt_engine.compiler.llm_utils.get_client", return_value=mock_client), \
+        with patch("bt_engine.compiler.llm_utils.get_genai_client", return_value=mock_client), \
              patch("bt_engine.compiler.llm_utils.get_model_name", return_value="test"):
             result = await ingester.refine(bad_proc, ["next_step 'nonexistent' not found"])
 
