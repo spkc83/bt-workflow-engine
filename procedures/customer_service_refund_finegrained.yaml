@@ -178,8 +178,6 @@ procedure:
           arg_mappings:
             - param: order_id
               source: order_id
-            - param: amount
-              source: amount
           result_key: store_credit_result
       on_success: close_case
       on_failure: escalate_case

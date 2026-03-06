@@ -109,6 +109,38 @@ async def issue_refund(order_id: str, reason: str, bb: dict) -> dict:
     return result
 
 
+async def issue_store_credit(order_id: str, bb: dict) -> dict:
+    """Issue store credit for a given order."""
+    order_data = bb.get("order_data", {})
+    credit_amount = order_data.get("total", 0)
+
+    credit_id = f"SC-{order_id.split('-')[1]}-{datetime.now().strftime('%H%M%S')}"
+    processed_at = datetime.now().isoformat()
+
+    await execute(
+        """
+        INSERT INTO refunds (refund_id, order_id, amount, currency, status, reason, refund_method, estimated_days, processed_at)
+        VALUES (?, ?, ?, 'USD', 'processed', 'Store credit issued', 'store_credit', 'immediate', ?)
+        """,
+        (credit_id, order_id, credit_amount, processed_at),
+    )
+
+    result = {
+        "credit_id": credit_id,
+        "order_id": order_id,
+        "amount": credit_amount,
+        "currency": "USD",
+        "status": "issued",
+        "validity": "12 months",
+        "processed_at": processed_at,
+    }
+
+    bb["store_credit_result"] = result
+    bb["workflow_status"] = "store_credit_issued"
+
+    return result
+
+
 async def update_case_status(case_id: str, status: str, notes: str, bb: dict) -> dict:
     """Update the status of a customer service case."""
     now = datetime.now().isoformat()
