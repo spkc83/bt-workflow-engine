@@ -115,11 +115,12 @@ class BTRunner:
         history.append({"role": "user", "content": user_message, "timestamp": datetime.now().isoformat()})
         self._bb.set("conversation_history", history)
 
-        # Ensure case_id exists for tools that need it
+        # Sync user_message into bb_dict so ConditionNode predicates can access it
         bb_dict = _bb_get(self._bb, "bb_dict", {})
+        bb_dict["user_message"] = user_message
         if "case_id" not in bb_dict:
             bb_dict["case_id"] = f"CASE-{self.session_id[:8]}"
-            self._bb.set("bb_dict", bb_dict)
+        self._bb.set("bb_dict", bb_dict)
 
         # Tick the tree
         max_ticks = 50  # Safety limit
