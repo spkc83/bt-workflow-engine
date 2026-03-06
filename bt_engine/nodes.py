@@ -101,7 +101,7 @@ class LLMResponseNode(py_trees.behaviour.Behaviour):
         self.bb.register_key(key="user_message", access=py_trees.common.Access.READ)
         self.bb.register_key(key="agent_response", access=py_trees.common.Access.WRITE)
         self.bb.register_key(key="conversation_history", access=py_trees.common.Access.READ)
-        self.bb.register_key(key="bb_dict", access=py_trees.common.Access.READ)
+        self.bb.register_key(key="bb_dict", access=py_trees.common.Access.WRITE)
 
     def update(self) -> py_trees.common.Status:
         try:
