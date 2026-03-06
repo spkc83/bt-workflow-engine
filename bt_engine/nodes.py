@@ -117,7 +117,7 @@ class LLMResponseNode(py_trees.behaviour.Behaviour):
 
             # Build prompt from template + blackboard context
             try:
-                prompt = self.prompt_template.format(**bb_dict, user_message=user_message)
+                prompt = self.prompt_template.format(**bb_dict)
             except KeyError:
                 prompt = self.prompt_template
 
