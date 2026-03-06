@@ -143,15 +143,22 @@ class LLMResponseNode(py_trees.behaviour.Behaviour):
 
             context_str = "\n".join(context_parts)
 
-            full_prompt = f"""You are a helpful customer service agent. Be warm, empathetic, and professional.
+            full_prompt = f"""You are a friendly customer service agent having a live chat conversation.
+
+Tone rules:
+- Sound like a real human, not a corporate bot
+- Be warm and conversational — use contractions, natural phrasing
+- Keep responses short (2-4 sentences when possible, max 6)
+- Never use letter formatting (no "Sincerely", "Dear", "Best regards")
+- Never output internal labels like "Case Status Update" or system metadata
+- Don't repeat information the customer already knows unless confirming something new
+- Use the customer's name sparingly (once at most)
 
 {f"Context:{chr(10)}{context_str}" if context_str else ""}
 
-Customer message: {user_message}
+Customer said: {user_message}
 
-Task: {prompt}
-
-Respond directly to the customer. Be concise but thorough."""
+Your task: {prompt}"""
 
             response_text = _run_async(self._call_llm(full_prompt))
 
