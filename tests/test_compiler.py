@@ -199,11 +199,11 @@ class TestToolRegistry:
         assert registry.has("nope") is False
 
     def test_default_registry_completeness(self):
-        """The default registry should have all 14 tools registered."""
+        """The default registry should have all 15 tools registered."""
         registry = create_default_registry()
         expected_tools = [
             "lookup_order", "search_orders", "get_customer_profile",
-            "issue_refund", "update_case_status",
+            "issue_refund", "issue_store_credit", "update_case_status",
             "escalate_to_supervisor", "add_case_note", "get_knowledge_article",
             "get_fraud_alert", "get_account_transactions", "check_device_fingerprint",
             "flag_account", "submit_sar", "close_alert",

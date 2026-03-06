@@ -81,6 +81,7 @@ def create_default_registry() -> ToolRegistry:
     from tools.crm_tools import (
         get_customer_profile,
         issue_refund,
+        issue_store_credit,
         lookup_order,
         search_orders,
         update_case_status,
@@ -106,6 +107,7 @@ def create_default_registry() -> ToolRegistry:
     registry.register("search_orders", search_orders)
     registry.register("get_customer_profile", get_customer_profile)
     registry.register("issue_refund", issue_refund)
+    registry.register("issue_store_credit", issue_store_credit)
     registry.register("update_case_status", update_case_status)
 
     # Common tools
