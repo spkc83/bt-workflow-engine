@@ -82,7 +82,7 @@ bt-workflow-engine/
 ├── examples/                     # Usage examples
 │   ├── sample_sop.txt            # Plain English SOP for ingestion demo
 │   └── ingest_demo.py            # LLM-powered ingestion demo script
-├── tests/                        # Test suite (169 tests)
+├── tests/                        # Test suite (170 tests)
 │   ├── test_bt_nodes.py          # Node unit tests
 │   ├── test_bt_runner.py         # Runner integration tests
 │   ├── test_tools.py             # Tool function tests
@@ -119,7 +119,7 @@ uvicorn main:app --reload --port 8000
 ### Run Tests
 
 ```bash
-# Full test suite (169 tests)
+# Full test suite (170 tests)
 pytest tests/ -v
 
 # Just compiler tests
@@ -403,13 +403,13 @@ The test suite validates the full stack:
 - **Runner tests** (10): Multi-turn execution, branching, tracing
 - **Tool tests** (13): All 14 tool functions against SQLite
 - **Compiler tests** (45): Condition parser, tool registry, YAML parser, full compilation, tree manager (includes fine-grained format)
-- **Equivalence tests** (16): Compiled trees produce same routing as hand-coded trees
+- **Equivalence tests** (17): Compiled trees produce same routing as hand-coded trees
 - **Schema tests** (21): Pydantic models, structured condition predicates, serialization round-trips
 - **Constrained decoding tests** (8): `generate_structured`, `classify_enum`, `LLMClassifyNode` with constrained/fallback
 - **Ingestion tests** (12): Pipeline stages, validation, tool refinement, YAML output (mocked LLM)
 
 ```bash
-pytest tests/ -v  # 169 tests, ~4 seconds
+pytest tests/ -v  # 170 tests, ~4 seconds
 ```
 
 ## License
