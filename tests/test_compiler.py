@@ -126,6 +126,24 @@ class TestConditionParser:
         # Missing order_data -> default 999 -> not within 30
         assert pred2({}) is False
 
+    def test_zero_days_since_delivery(self):
+        """days_since_delivery=0 should be 'within' any window (not treated as falsy)."""
+        pred_within = parse_condition("order_date within 30 days")
+        assert pred_within is not None
+        # 0 days since delivery = just delivered today -> within 30 days
+        assert pred_within({"order_data": {"days_since_delivery": 0}}) is True
+
+        pred_outside = parse_condition("order_date outside 30 days")
+        assert pred_outside is not None
+        # 0 days since delivery -> NOT outside 30 days
+        assert pred_outside({"order_data": {"days_since_delivery": 0}}) is False
+
+    def test_zero_risk_score(self):
+        """risk_score=0 should not be treated as missing."""
+        pred = parse_condition("risk_score >= 0")
+        assert pred is not None
+        assert pred({"alert_data": {"risk_score": 0}}) is True
+
 
 # ---------------------------------------------------------------------------
 # Tool registry tests

@@ -118,25 +118,25 @@ def _parse_single_condition(cond: str) -> Callable[[dict], bool] | None:
     m = re.match(r'^(\w+)\s*>=\s*([\d.]+)$', cond)
     if m:
         field, value = m.group(1), float(m.group(2))
-        return lambda bb, f=field, v=value: (_resolve_field(bb, f) or 0) >= v
+        return lambda bb, f=field, v=value: (0 if _resolve_field(bb, f) is None else _resolve_field(bb, f)) >= v
 
     # Pattern: "field < number"
     m = re.match(r'^(\w+)\s*<\s*([\d.]+)$', cond)
     if m:
         field, value = m.group(1), float(m.group(2))
-        return lambda bb, f=field, v=value: (_resolve_field(bb, f) or 0) < v
+        return lambda bb, f=field, v=value: (0 if _resolve_field(bb, f) is None else _resolve_field(bb, f)) < v
 
     # Pattern: "field > number"
     m = re.match(r'^(\w+)\s*>\s*([\d.]+)$', cond)
     if m:
         field, value = m.group(1), float(m.group(2))
-        return lambda bb, f=field, v=value: (_resolve_field(bb, f) or 0) > v
+        return lambda bb, f=field, v=value: (0 if _resolve_field(bb, f) is None else _resolve_field(bb, f)) > v
 
     # Pattern: "field <= number"
     m = re.match(r'^(\w+)\s*<=\s*([\d.]+)$', cond)
     if m:
         field, value = m.group(1), float(m.group(2))
-        return lambda bb, f=field, v=value: (_resolve_field(bb, f) or 0) <= v
+        return lambda bb, f=field, v=value: (0 if _resolve_field(bb, f) is None else _resolve_field(bb, f)) <= v
 
     # Pattern: "field in [val1, val2, ...]"
     m = re.match(r'^(\w+)\s+in\s+\[([^\]]+)\]$', cond)
@@ -156,13 +156,13 @@ def _parse_single_condition(cond: str) -> Callable[[dict], bool] | None:
     m = re.match(r'^(\w+)\s+within\s+(\d+)\s+days?$', cond, re.IGNORECASE)
     if m:
         field, days = m.group(1), int(m.group(2))
-        return lambda bb, f=field, d=days: (_resolve_field(bb, f) or 999) <= d
+        return lambda bb, f=field, d=days: (999 if _resolve_field(bb, f) is None else _resolve_field(bb, f)) <= d
 
     # Pattern: "field outside N days"
     m = re.match(r'^(\w+)\s+outside\s+(\d+)\s+days?$', cond, re.IGNORECASE)
     if m:
         field, days = m.group(1), int(m.group(2))
-        return lambda bb, f=field, d=days: (_resolve_field(bb, f) or 0) > d
+        return lambda bb, f=field, d=days: (0 if _resolve_field(bb, f) is None else _resolve_field(bb, f)) > d
 
     # Pattern: "severity == high OR risk_score >= 80" (already handled by _try_parse_or)
     # Pattern: compound with parentheses — not supported, fall through
@@ -229,16 +229,16 @@ def parse_structured_condition(cond) -> Callable[[dict], bool]:
         return pred
 
     elif operator == "gt":
-        return lambda bb, r=_resolve, v=value: (r(bb) or 0) > float(v)
+        return lambda bb, r=_resolve, v=value: (0 if r(bb) is None else r(bb)) > float(v)
 
     elif operator == "gte":
-        return lambda bb, r=_resolve, v=value: (r(bb) or 0) >= float(v)
+        return lambda bb, r=_resolve, v=value: (0 if r(bb) is None else r(bb)) >= float(v)
 
     elif operator == "lt":
-        return lambda bb, r=_resolve, v=value: (r(bb) or 0) < float(v)
+        return lambda bb, r=_resolve, v=value: (0 if r(bb) is None else r(bb)) < float(v)
 
     elif operator == "lte":
-        return lambda bb, r=_resolve, v=value: (r(bb) or 0) <= float(v)
+        return lambda bb, r=_resolve, v=value: (0 if r(bb) is None else r(bb)) <= float(v)
 
     elif operator == "in":
         vals = value if isinstance(value, list) else [value]
@@ -251,10 +251,10 @@ def parse_structured_condition(cond) -> Callable[[dict], bool]:
         return lambda bb, r=_resolve, vs=lower_vals: str(r(bb) or "").lower() not in vs
 
     elif operator == "within_days":
-        return lambda bb, r=_resolve, d=value: (r(bb) or 999) <= int(d)
+        return lambda bb, r=_resolve, d=value: (999 if r(bb) is None else r(bb)) <= int(d)
 
     elif operator == "outside_days":
-        return lambda bb, r=_resolve, d=value: (r(bb) or 0) > int(d)
+        return lambda bb, r=_resolve, d=value: (0 if r(bb) is None else r(bb)) > int(d)
 
     elif operator == "contains":
         return lambda bb, r=_resolve, v=value: str(v).lower() in str(r(bb) or "").lower()
