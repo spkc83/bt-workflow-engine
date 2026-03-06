@@ -334,14 +334,14 @@ class ToolActionNode(py_trees.behaviour.Behaviour):
                 logger.info(f"[{self.name}] Skipped (resume)")
                 return py_trees.common.Status.SUCCESS
 
-            # Build args from blackboard
+            # Build args from blackboard (skip None values — the tool function's
+            # own defaults handle optional params; missing required params will
+            # raise TypeError, caught by the except block below)
             kwargs = {}
             for param_name, bb_key in self.arg_keys.items():
                 value = bb_dict.get(bb_key)
-                if value is None:
-                    logger.warning(f"[{self.name}] Missing blackboard key: {bb_key}")
-                    return py_trees.common.Status.FAILURE
-                kwargs[param_name] = value
+                if value is not None:
+                    kwargs[param_name] = value
 
             # Add fixed args
             kwargs.update(self.fixed_args)
