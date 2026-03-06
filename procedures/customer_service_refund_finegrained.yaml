@@ -132,8 +132,8 @@ procedure:
           arg_mappings:
             - param: order_id
               source: order_id
-            - param: amount
-              source: amount
+          fixed_args:
+            reason: "Customer requested refund"
           result_key: refund_result
       on_success: close_case
       on_failure: escalate_case
@@ -220,7 +220,8 @@ procedure:
             - param: case_id
               source: case_id
           fixed_args:
-            new_status: "cancelled"
+            status: "cancelled"
+            notes: "Order cancelled — still in processing"
           result_key: cancellation_result
       on_success: close_case
       on_failure: escalate_case
@@ -236,6 +237,9 @@ procedure:
           arg_mappings:
             - param: case_id
               source: case_id
+          fixed_args:
+            reason: "Customer requested escalation"
+            priority: "medium"
           result_key: escalation_result
       on_success: close_case
       on_failure: close_case
@@ -252,8 +256,11 @@ procedure:
             - param: case_id
               source: case_id
           fixed_args:
-            new_status: "resolved"
+            status: "resolved"
+            notes: "Case resolved"
           result_key: close_result
       on_success: end
       on_failure: end
       next_step: end
+      await_input: false
+      save_memory: true

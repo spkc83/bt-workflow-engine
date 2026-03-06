@@ -16,11 +16,34 @@ from bt_engine.nodes import (
     LLMExtractNode,
     LLMResponseNode,
     LogNode,
+    MemoryWriteNode,
     ToolActionNode,
     UserInputNode,
 )
 from bt_engine.compiler.condition_parser import parse_condition, parse_structured_condition
 from bt_engine.compiler.tool_registry import ToolRegistry
+
+
+def _should_pause(step: dict) -> bool:
+    """Determine if a conversational pause (UserInputNode) should be inserted after this step.
+
+    Rules:
+    - If await_input is explicitly set, respect it.
+    - Default: pause after tool_call steps that have on_success (the user should see
+      the tool result confirmation before the workflow continues to the next phase).
+    - Default: do NOT pause if on_success is 'end' (no more steps to run).
+    """
+    explicit = step.get("await_input")
+    if explicit is not None:
+        return bool(explicit)
+
+    # Default heuristic: pause after tool_call with on_success pointing to a real step
+    if step.get("action") == "tool_call":
+        on_success = step.get("on_success")
+        if on_success and on_success != "end":
+            return True
+
+    return False
 
 
 def compile_collect_info(
@@ -239,12 +262,19 @@ def _compile_single_tool(
                 )
             )
 
+        # Insert conversational pause before continuing to on_success
+        if _should_pause(step):
+            success_children.append(UserInputNode(f"pause_{step_id}"))
+
         # Compile the on_success next step inline
         if on_success and on_success != "end":
             next_subtree = compile_step(on_success, all_steps)
             if next_subtree is not None:
                 success_children.append(next_subtree)
         elif on_success == "end":
+            # Add memory save if configured
+            if step.get("save_memory"):
+                success_children.append(MemoryWriteNode(f"memory_{step_id}"))
             success_children.append(LogNode(f"{step_id}_end", message="workflow_end"))
 
         success_seq.add_children(success_children)
@@ -290,9 +320,11 @@ def _compile_multi_tool(
     """Compile a multi-tool tool_call step (e.g., lookup_order + search_orders).
 
     Pattern: Selector where each tool path is guarded by a condition.
+    If on_success is specified, the entire multi-tool selector is wrapped in a
+    Sequence that chains to the on_success subtree (mirroring _compile_single_tool).
     """
     step_id = step["id"]
-    root = py_trees.composites.Selector(step_id, memory=False)
+    tool_selector = py_trees.composites.Selector(f"{step_id}_tools", memory=False)
 
     for i, tool_name in enumerate(tools_list):
         entry = registry.get(tool_name)
@@ -335,16 +367,16 @@ def _compile_multi_tool(
             ))
 
         path.add_children(children)
-        root.add_children([path])
+        tool_selector.add_children([path])
 
     # Fallback: not found
     on_failure = step.get("on_failure")
     if on_failure:
         fail_subtree = compile_step(on_failure, all_steps)
         if fail_subtree is not None:
-            root.add_children([fail_subtree])
+            tool_selector.add_children([fail_subtree])
     else:
-        root.add_children([
+        tool_selector.add_children([
             LLMResponseNode(
                 f"not_found_{step_id}",
                 prompt_template=(
@@ -354,7 +386,30 @@ def _compile_multi_tool(
             ),
         ])
 
-    return root
+    # Chain on_success target after the tool selector (same pattern as _compile_single_tool)
+    on_success = step.get("on_success")
+    if on_success:
+        root = py_trees.composites.Sequence(step_id, memory=True)
+        root_children = [tool_selector]
+
+        # Insert conversational pause before continuing to on_success
+        if _should_pause(step):
+            root_children.append(UserInputNode(f"pause_{step_id}"))
+
+        if on_success != "end":
+            next_subtree = compile_step(on_success, all_steps)
+            if next_subtree is not None:
+                root_children.append(next_subtree)
+        else:
+            # Add memory save if configured
+            if step.get("save_memory"):
+                root_children.append(MemoryWriteNode(f"memory_{step_id}"))
+            root_children.append(LogNode(f"{step_id}_end", message="workflow_end"))
+
+        root.add_children(root_children)
+        return root
+
+    return tool_selector
 
 
 def compile_evaluate(

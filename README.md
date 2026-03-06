@@ -39,6 +39,9 @@ A **behaviour tree workflow engine** for customer service automation. Workflows 
 - **Deterministic routing**: All branching decisions use Python predicates, not LLM calls
 - **LLM-assisted, not LLM-driven**: LLMs generate responses, extract data, and classify inputs — the behaviour tree controls flow
 - **YAML-configurable**: New workflows are created by writing YAML, not Python code
+- **Conversational pause points**: Tree pauses at `UserInputNode` boundaries for natural multi-turn dialogue
+- **Session persistence**: Sessions survive infrastructure failures via DB-backed pause & resume
+- **Cross-session memory**: Customer interaction history carries across sessions for contextual responses
 - **Fresh tree per session**: Each session gets a freshly compiled tree (py_trees nodes hold mutable state)
 - **Hot reload**: YAML procedures can be reloaded at runtime without restart
 
@@ -47,7 +50,7 @@ A **behaviour tree workflow engine** for customer service automation. Workflows 
 ```
 bt-workflow-engine/
 ├── bt_engine/                    # Core engine
-│   ├── nodes.py                  # Custom BT node types (9 nodes)
+│   ├── nodes.py                  # Custom BT node types (10 nodes)
 │   ├── runner.py                 # BT execution engine (BTRunner)
 │   ├── audit.py                  # Tick-level execution tracing
 │   ├── trees/                    # Hand-coded reference trees
@@ -346,11 +349,41 @@ Unparseable conditions (e.g., `"multiple high-confidence fraud indicators presen
 | `ConditionNode` | Evaluate Python predicate | SUCCESS/FAILURE |
 | `UserInputNode` | Pause for user input | RUNNING → SUCCESS |
 | `BlackboardWriteNode` | Write data to blackboard | SUCCESS |
+| `MemoryWriteNode` | Save interaction memory to DB | SUCCESS |
 | `LogNode` | Audit trail entry | SUCCESS |
+
+## Conversational Features
+
+### Pause Points (`await_input`)
+
+The tree pauses at `UserInputNode` boundaries so the user sees each step's response before the workflow continues. By default, tool_call steps with `on_success` targeting another step insert a pause. Override with `await_input: true/false` in YAML:
+
+```yaml
+- id: process_refund
+  action: tool_call
+  await_input: true   # force pause after this step
+  # ...
+```
+
+### Session Pause & Resume
+
+Sessions are persisted to SQLite after every `run()` call. If the server restarts or the connection drops, the session resumes from where it left off:
+
+- `BTRunner.save_session()` serializes blackboard state, conversation history, and completed steps
+- `BTRunner.load_session()` restores a session from DB
+- Skip-on-resume: `ToolActionNode` and `LLMResponseNode` track completed steps to avoid re-execution
+
+### Cross-Session Customer Memory
+
+When `save_memory: true` is set on a step, a `MemoryWriteNode` persists an interaction summary to the `customer_memories` table. On new sessions, `BTRunner.load_memories()` loads past interactions into the blackboard, and `LLMResponseNode` includes them in prompt context for personalized responses.
+
+### Completion Guard
+
+Once a tree reaches SUCCESS or FAILURE, the runner refuses to re-tick it and returns a completion message. This prevents accidental re-execution of workflows.
 
 ## Database
 
-SQLite with 14 tables covering customers, orders, accounts, transactions, fraud alerts, devices, cases, escalations, refunds, and knowledge articles. Seeded with mock data on startup.
+SQLite with 16 tables covering customers, orders, accounts, transactions, fraud alerts, devices, cases, escalations, refunds, knowledge articles, customer memories, and sessions. Seeded with mock data on startup.
 
 ## Configuration
 

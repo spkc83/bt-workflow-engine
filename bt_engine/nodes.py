@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 import py_trees
 
-from config import get_client, get_model_name
+from config import get_genai_client, get_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,20 @@ def _bb_get(client: py_trees.blackboard.Client, key: str, default=None):
 # Helper: run async function from synchronous py_trees update()
 # ---------------------------------------------------------------------------
 
+def _run_coro_in_new_loop(coro):
+    """Run a coroutine in a brand-new event loop (for use in a worker thread).
+
+    This avoids 'Future attached to a different loop' errors that occur when
+    an async client (e.g. google.genai aio) reuses objects bound to another loop.
+    """
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 def _run_async(coro):
     """Run an async coroutine from synchronous context.
 
@@ -56,10 +70,11 @@ def _run_async(coro):
         loop = None
 
     if loop and loop.is_running():
-        # We're inside an async context (e.g. FastAPI) — use a future
+        # We're inside an async context (e.g. FastAPI) — run in a thread
+        # with a fresh event loop to avoid "Future attached to a different loop"
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(asyncio.run, coro).result()
+            return pool.submit(_run_coro_in_new_loop, coro).result()
     else:
         return asyncio.run(coro)
 
@@ -91,6 +106,13 @@ class LLMResponseNode(py_trees.behaviour.Behaviour):
     def update(self) -> py_trees.common.Status:
         try:
             bb_dict = _bb_get(self.bb, "bb_dict", {})
+
+            # Skip-on-resume: if this node already ran in a prior session, skip
+            completed_steps = bb_dict.get("_completed_steps", set())
+            if self.name in completed_steps:
+                logger.info(f"[{self.name}] Skipped (resume)")
+                return py_trees.common.Status.SUCCESS
+
             user_message = _bb_get(self.bb, "user_message", "")
 
             # Build prompt from template + blackboard context
@@ -113,6 +135,11 @@ class LLMResponseNode(py_trees.behaviour.Behaviour):
             escalation_data = bb_dict.get("escalation_data")
             if escalation_data:
                 context_parts.append(f"Escalation info: {json.dumps(escalation_data, default=str)}")
+            # Cross-session memories
+            memories = bb_dict.get("customer_memories")
+            if memories:
+                mem_lines = [f"- {m['summary']}" for m in memories[:5]]
+                context_parts.append(f"Past interactions:\n" + "\n".join(mem_lines))
 
             context_str = "\n".join(context_parts)
 
@@ -135,6 +162,12 @@ Respond directly to the customer. Be concise but thorough."""
             else:
                 self.bb.set("agent_response", response_text)
 
+            # Track completion for resume
+            completed_steps = bb_dict.get("_completed_steps", set())
+            completed_steps.add(self.name)
+            bb_dict["_completed_steps"] = completed_steps
+            self.bb.set("bb_dict", bb_dict)
+
             logger.info(f"[{self.name}] LLM response generated ({len(response_text)} chars)")
             return py_trees.common.Status.SUCCESS
 
@@ -143,7 +176,9 @@ Respond directly to the customer. Be concise but thorough."""
             return py_trees.common.Status.FAILURE
 
     async def _call_llm(self, prompt: str) -> str:
-        client = get_client()
+        # Create a fresh client so its aiohttp session belongs to the
+        # current event loop (avoids "Future attached to a different loop").
+        client = get_genai_client()
         response = await client.aio.models.generate_content(
             model=get_model_name(),
             contents=prompt,
@@ -240,7 +275,9 @@ Example: {{"order_id": "ORD-123", "merchant_name": "TechMart", "amount": 80.0, "
             return {}
 
     async def _call_llm(self, prompt: str) -> str:
-        client = get_client()
+        # Create a fresh client so its aiohttp session belongs to the
+        # current event loop (avoids "Future attached to a different loop").
+        client = get_genai_client()
         response = await client.aio.models.generate_content(
             model=get_model_name(),
             contents=prompt,
@@ -284,6 +321,12 @@ class ToolActionNode(py_trees.behaviour.Behaviour):
         try:
             bb_dict = _bb_get(self.bb, "bb_dict", {})
 
+            # Skip-on-resume: if this tool already ran successfully, skip
+            completed_steps = bb_dict.get("_completed_steps", set())
+            if self.name in completed_steps:
+                logger.info(f"[{self.name}] Skipped (resume)")
+                return py_trees.common.Status.SUCCESS
+
             # Build args from blackboard
             kwargs = {}
             for param_name, bb_key in self.arg_keys.items():
@@ -311,6 +354,12 @@ class ToolActionNode(py_trees.behaviour.Behaviour):
             if isinstance(result, dict) and result.get("found") is False:
                 logger.info(f"[{self.name}] Tool returned not found")
                 return py_trees.common.Status.FAILURE
+
+            # Track completion for resume
+            completed_steps = bb_dict.get("_completed_steps", set())
+            completed_steps.add(self.name)
+            bb_dict["_completed_steps"] = completed_steps
+            self.bb.set("bb_dict", bb_dict)
 
             logger.info(f"[{self.name}] Tool call succeeded")
             return py_trees.common.Status.SUCCESS
@@ -533,7 +582,7 @@ Classify into exactly ONE of these categories: {categories_str}"""
 
     async def _classify_freetext(self, prompt: str) -> str:
         """Fallback: free-text classification with string matching."""
-        client = get_client()
+        client = get_genai_client()
         full_prompt = prompt + "\n\nReturn ONLY the category name, nothing else."
         response = await client.aio.models.generate_content(
             model=get_model_name(),
@@ -544,3 +593,84 @@ Classify into exactly ONE of these categories: {categories_str}"""
             if cat.lower() in response_text:
                 return cat
         return response_text
+
+
+# ---------------------------------------------------------------------------
+# MemoryWriteNode
+# ---------------------------------------------------------------------------
+
+class MemoryWriteNode(py_trees.behaviour.Behaviour):
+    """Save a customer memory to the database for cross-session context.
+
+    Summarizes the current interaction using LLM and persists it to the
+    customer_memories table. Used at workflow completion when save_memory=True.
+    """
+
+    def __init__(self, name: str, memory_type: str = "interaction", **kwargs):
+        super().__init__(name, **kwargs)
+        self.memory_type = memory_type
+        self.bb = None
+
+    def initialise(self):
+        self.bb = py_trees.blackboard.Client(name=self.name)
+        self.bb.register_key(key="bb_dict", access=py_trees.common.Access.READ)
+        self.bb.register_key(key="conversation_history", access=py_trees.common.Access.READ)
+
+    def update(self) -> py_trees.common.Status:
+        try:
+            bb_dict = _bb_get(self.bb, "bb_dict", {})
+            history = _bb_get(self.bb, "conversation_history", [])
+            customer_id = bb_dict.get("customer_id")
+
+            if not customer_id or not history:
+                logger.info(f"[{self.name}] No customer_id or history — skipping memory save")
+                return py_trees.common.Status.SUCCESS
+
+            # Build a summary from blackboard state
+            summary_parts = []
+            if bb_dict.get("order_data"):
+                order = bb_dict["order_data"]
+                summary_parts.append(
+                    f"Order {order.get('order_id', 'unknown')}: "
+                    f"{order.get('merchant_name', '')} ${order.get('total', '')}"
+                )
+            if bb_dict.get("refund_data") or bb_dict.get("refund_result"):
+                summary_parts.append("Refund processed")
+            if bb_dict.get("escalation_data") or bb_dict.get("escalation_result"):
+                summary_parts.append("Case escalated to supervisor")
+            if bb_dict.get("store_credit_result"):
+                summary_parts.append("Store credit issued")
+
+            if not summary_parts:
+                summary_parts.append("Customer service interaction")
+
+            summary = "; ".join(summary_parts)
+
+            # Persist to database
+            memory_data = {
+                "order_id": bb_dict.get("order_id"),
+                "case_id": bb_dict.get("case_id"),
+                "resolution": summary,
+            }
+            _run_async(self._save_memory(customer_id, summary, memory_data))
+
+            logger.info(f"[{self.name}] Memory saved for customer {customer_id}: {summary}")
+            return py_trees.common.Status.SUCCESS
+
+        except Exception as e:
+            # Memory save failure should not block the workflow
+            logger.error(f"[{self.name}] Memory save failed (non-blocking): {e}")
+            return py_trees.common.Status.SUCCESS
+
+    async def _save_memory(self, customer_id: str, summary: str, data: dict):
+        """Persist memory to the customer_memories table."""
+        import uuid
+        from database.db import execute
+
+        memory_id = f"MEM-{uuid.uuid4().hex[:8]}"
+        await execute(
+            """INSERT INTO customer_memories (memory_id, customer_id, memory_type, summary, data, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (memory_id, customer_id, self.memory_type, summary, json.dumps(data, default=str),
+             datetime.now().isoformat()),
+        )

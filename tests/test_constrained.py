@@ -59,7 +59,7 @@ class TestGenerateStructured:
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-        with patch("bt_engine.compiler.llm_utils.get_client", return_value=mock_client), \
+        with patch("bt_engine.compiler.llm_utils.get_genai_client", return_value=mock_client), \
              patch("bt_engine.compiler.llm_utils.get_model_name", return_value="gemini-2.5-flash"):
             result = await generate_structured("test prompt", StructuredCondition)
 
@@ -76,7 +76,7 @@ class TestGenerateStructured:
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-        with patch("bt_engine.compiler.llm_utils.get_client", return_value=mock_client), \
+        with patch("bt_engine.compiler.llm_utils.get_genai_client", return_value=mock_client), \
              patch("bt_engine.compiler.llm_utils.get_model_name", return_value="gemini-2.5-flash"):
             await generate_structured("test", StructuredCondition)
 
@@ -104,7 +104,7 @@ class TestClassifyEnum:
 
         SeverityEnum = make_dynamic_enum("Severity", ["low", "medium", "high"])
 
-        with patch("bt_engine.compiler.llm_utils.get_client", return_value=mock_client), \
+        with patch("bt_engine.compiler.llm_utils.get_genai_client", return_value=mock_client), \
              patch("bt_engine.compiler.llm_utils.get_model_name", return_value="gemini-2.5-flash"):
             result = await classify_enum("classify severity", SeverityEnum)
 
@@ -120,7 +120,7 @@ class TestClassifyEnum:
 
         CatEnum = make_dynamic_enum("Category", ["fraud_confirmed", "false_positive"])
 
-        with patch("bt_engine.compiler.llm_utils.get_client", return_value=mock_client), \
+        with patch("bt_engine.compiler.llm_utils.get_genai_client", return_value=mock_client), \
              patch("bt_engine.compiler.llm_utils.get_model_name", return_value="gemini-2.5-flash"):
             await classify_enum("test", CatEnum)
 
@@ -173,7 +173,7 @@ class TestLLMClassifyNodeConstrained:
         mock_client = MagicMock()
         mock_client.aio.models.generate_content = AsyncMock(return_value=mock_response)
 
-        with patch("bt_engine.compiler.llm_utils.get_client", return_value=mock_client), \
+        with patch("bt_engine.compiler.llm_utils.get_genai_client", return_value=mock_client), \
              patch("bt_engine.compiler.llm_utils.get_model_name", return_value="gemini-2.5-flash"):
             node.initialise()
             import py_trees
@@ -205,9 +205,9 @@ class TestLLMClassifyNodeConstrained:
             side_effect=[Exception("constrained not supported"), mock_response]
         )
 
-        with patch("bt_engine.compiler.llm_utils.get_client", return_value=mock_client), \
+        with patch("bt_engine.compiler.llm_utils.get_genai_client", return_value=mock_client), \
              patch("bt_engine.compiler.llm_utils.get_model_name", return_value="gemini-2.5-flash"), \
-             patch("bt_engine.nodes.get_client", return_value=mock_client), \
+             patch("bt_engine.nodes.get_genai_client", return_value=mock_client), \
              patch("bt_engine.nodes.get_model_name", return_value="gemini-2.5-flash"):
             node.initialise()
             import py_trees

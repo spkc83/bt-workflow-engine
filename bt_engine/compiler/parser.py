@@ -145,3 +145,7 @@ def _normalize_steps(proc: dict) -> None:
 
         # Universal
         step.setdefault("next_step", None)
+
+        # Conversational flow control
+        step.setdefault("await_input", None)
+        step.setdefault("save_memory", False)

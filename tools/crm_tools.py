@@ -247,6 +247,7 @@ async def search_orders(
             "found": True,
         }
         bb["order_data"] = order_data
+        bb["order_id"] = order["order_id"]
         bb["customer_id"] = order["customer_id"]
         result["message"] = f"Found order {match['order_id']} from {match['merchant_name']}."
     else:

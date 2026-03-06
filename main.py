@@ -150,6 +150,24 @@ async def chat(request: ChatRequest) -> ChatResponse:
     runner = _sessions.get(session_id)
 
     if runner is None:
+        # Try to restore from database (pause & resume)
+        saved = await BTRunner.load_session(session_id)
+        if saved and saved["tree_status"] == "RUNNING":
+            restore_intent = saved["intent"]
+            factory = _tree_manager.get_tree_factory(restore_intent)
+            if factory:
+                tree = factory()
+                runner = BTRunner(
+                    tree=tree,
+                    session_state=saved["blackboard_state"],
+                    session_id=session_id,
+                    procedure_id=saved["procedure_id"],
+                    intent=restore_intent,
+                )
+                _sessions[session_id] = runner
+                intent = restore_intent
+
+    if runner is None:
         # New session — classify intent and create appropriate tree
         intent = await classify_intent(request.message)
 
@@ -186,11 +204,23 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
         tree = factory()
         initial_state = {"customer_id": request.user_id}
-        runner = BTRunner(tree=tree, session_state=initial_state, session_id=session_id)
+        runner = BTRunner(
+            tree=tree,
+            session_state=initial_state,
+            session_id=session_id,
+            procedure_id=intent,
+            intent=intent,
+        )
         _sessions[session_id] = runner
+
+        # Load cross-session customer memories
+        await runner.load_memories(request.user_id)
 
     # Run the tree with the user message
     result = runner.run(request.message)
+
+    # Save session state after every run (for pause & resume)
+    await runner.save_session()
 
     return ChatResponse(
         response=result.response or "I'm processing your request...",
