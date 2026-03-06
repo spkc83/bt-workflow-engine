@@ -435,3 +435,29 @@ class TestStructuralEquivalence:
         assert "ConditionNode" in node_types
         # assess_risk has unparseable conditions -> should use LLMClassifyNode
         assert "LLMClassifyNode" in node_types
+
+    def test_finegrained_multi_tool_arg_mappings(self, compiler):
+        """Fine-grained YAML multi-tool steps should use per-tool arg_mappings, not registry defaults."""
+        tree = compiler.compile("procedures/customer_service_refund_finegrained.yaml")
+
+        # Find all ToolActionNode instances in the lookup_order subtree
+        tool_nodes = []
+        for node in tree.root.iterate():
+            if isinstance(node, ToolActionNode) and "lookup_order" in node.name:
+                tool_nodes.append(node)
+
+        # Should have a lookup_order node with arg_keys={order_id: order_id}
+        lookup_nodes = [n for n in tool_nodes if "call_lookup_order" in n.name]
+        assert len(lookup_nodes) == 1, f"Expected 1 lookup_order node, got {len(lookup_nodes)}"
+        assert lookup_nodes[0].arg_keys == {"order_id": "order_id"}
+
+        # Find search_orders node
+        search_nodes = []
+        for node in tree.root.iterate():
+            if isinstance(node, ToolActionNode) and "search_orders" in node.name:
+                search_nodes.append(node)
+        assert len(search_nodes) == 1, f"Expected 1 search_orders node, got {len(search_nodes)}"
+        # search_orders should have per-tool YAML mappings, NOT registry default {customer_id: customer_id}
+        assert "customer_id" in search_nodes[0].arg_keys
+        assert "merchant_name" in search_nodes[0].arg_keys
+        assert "amount" in search_nodes[0].arg_keys

@@ -182,33 +182,65 @@ def compile_tool_call(
         raw_tools = step.get("tools", [])
         if raw_tools and isinstance(raw_tools, list) and isinstance(raw_tools[0], dict):
             tool_configs = raw_tools
-    if tool_configs and isinstance(tool_configs, list) and len(tool_configs) > 0:
-        # Convert tool_configs to legacy format for compilation,
-        # but apply explicit arg_mappings and fixed_args
-        for tc in tool_configs:
-            if isinstance(tc, dict) and tc.get("arg_mappings"):
-                # Override step-level arg_keys with explicit mappings
-                step["arg_keys"] = {
-                    m["param"]: m["source"] for m in tc["arg_mappings"]
-                }
-            if isinstance(tc, dict) and tc.get("fixed_args"):
-                if step.get("fixed_args") is None:
-                    step["fixed_args"] = {}
-                step["fixed_args"].update(tc["fixed_args"])
-            if isinstance(tc, dict) and tc.get("result_key"):
-                step["result_key"] = tc["result_key"]
 
-        tools_list = [
-            tc["name"] if isinstance(tc, dict) else tc
-            for tc in tool_configs
-        ]
+    if tool_configs and isinstance(tool_configs, list) and len(tool_configs) > 0:
+        # Build per-tool config list preserving each tool's individual mappings
+        per_tool_configs = []
+        for tc in tool_configs:
+            if not isinstance(tc, dict):
+                per_tool_configs.append({"name": tc})
+                continue
+            cfg = {"name": tc["name"]}
+            if tc.get("arg_mappings"):
+                cfg["arg_keys"] = {m["param"]: m["source"] for m in tc["arg_mappings"]}
+            if tc.get("fixed_args"):
+                cfg["fixed_args"] = tc["fixed_args"]
+            if tc.get("result_key"):
+                cfg["result_key"] = tc["result_key"]
+            if tc.get("guard_condition"):
+                cfg["guard_condition"] = tc["guard_condition"]
+            per_tool_configs.append(cfg)
+
+        if len(per_tool_configs) > 1:
+            return _compile_multi_tool(step, per_tool_configs, all_steps, registry, compile_step)
+        else:
+            # Single tool in fine-grained format — apply its config to step for _compile_single_tool
+            cfg = per_tool_configs[0]
+            if cfg.get("arg_keys"):
+                step["arg_keys"] = cfg["arg_keys"]
+            if cfg.get("fixed_args"):
+                step["fixed_args"] = {**(step.get("fixed_args") or {}), **cfg["fixed_args"]}
+            if cfg.get("result_key"):
+                step["result_key"] = cfg["result_key"]
+            return _compile_single_tool(step, cfg["name"], all_steps, registry, compile_step)
     else:
         tools_list = step.get("tools", [step["tool"]] if step.get("tool") else [])
 
     if len(tools_list) > 1:
-        return _compile_multi_tool(step, tools_list, all_steps, registry, compile_step)
+        # Legacy multi-tool (plain string names) — wrap as minimal configs
+        per_tool_configs = [{"name": t} for t in tools_list]
+        return _compile_multi_tool(step, per_tool_configs, all_steps, registry, compile_step)
     else:
         return _compile_single_tool(step, tools_list[0], all_steps, registry, compile_step)
+
+
+def _build_guard_condition(name: str, guard: dict) -> ConditionNode:
+    """Build a ConditionNode from a YAML guard_condition dict.
+
+    Supported operators: eq, neq, in, exists.
+    """
+    field = guard["field"]
+    operator = guard.get("operator", "exists")
+    value = guard.get("value")
+
+    if operator == "neq":
+        return ConditionNode(name, lambda bb, f=field, v=value: bool(bb.get(f)) and bb.get(f) != v)
+    elif operator == "eq":
+        return ConditionNode(name, lambda bb, f=field, v=value: bb.get(f) == v)
+    elif operator == "in":
+        return ConditionNode(name, lambda bb, f=field, v=value: bb.get(f) in (v if isinstance(v, list) else [v]))
+    else:  # exists
+        return ConditionNode(name, lambda bb, f=field: bool(bb.get(f)))
 
 
 def _compile_single_tool(
@@ -312,12 +344,16 @@ def _compile_single_tool(
 
 def _compile_multi_tool(
     step: dict,
-    tools_list: list[str],
+    per_tool_configs: list[dict],
     all_steps: dict[str, dict],
     registry: ToolRegistry,
     compile_step: Callable,
 ) -> py_trees.behaviour.Behaviour:
     """Compile a multi-tool tool_call step (e.g., lookup_order + search_orders).
+
+    Args:
+        per_tool_configs: List of dicts, each with 'name' and optional
+            'arg_keys', 'fixed_args', 'result_key', 'guard_condition'.
 
     Pattern: Selector where each tool path is guarded by a condition.
     If on_success is specified, the entire multi-tool selector is wrapped in a
@@ -326,26 +362,34 @@ def _compile_multi_tool(
     step_id = step["id"]
     tool_selector = py_trees.composites.Selector(f"{step_id}_tools", memory=False)
 
-    for i, tool_name in enumerate(tools_list):
+    for i, tool_cfg in enumerate(per_tool_configs):
+        tool_name = tool_cfg["name"]
         entry = registry.get(tool_name)
         if entry is None:
             continue
 
-        arg_keys = dict(entry.arg_keys)
+        # Use per-tool YAML config if available, otherwise fall back to registry defaults
+        arg_keys = tool_cfg.get("arg_keys") or dict(entry.arg_keys)
         fixed_args = dict(entry.fixed_args)
-        result_key = f"{tool_name}_result"
+        if tool_cfg.get("fixed_args"):
+            fixed_args.update(tool_cfg["fixed_args"])
+        result_key = tool_cfg.get("result_key") or f"{tool_name}_result"
 
         path = py_trees.composites.Sequence(f"{step_id}_{tool_name}", memory=True)
         children = []
 
-        # First tool (exact lookup) — guarded by having exact ID
-        if i == 0:
+        # Use guard_condition from YAML if provided, otherwise fall back to heuristic
+        guard = tool_cfg.get("guard_condition")
+        if guard:
+            children.append(_build_guard_condition(f"guard_{step_id}_{tool_name}", guard))
+        elif i == 0:
+            # First tool (exact lookup) — guarded by having exact ID
             children.append(ConditionNode(
                 f"has_exact_id_{step_id}",
                 lambda bb: bool(bb.get("order_id") or bb.get("alert_id")),
             ))
-        # Second tool (search) — guarded by having clues
         elif i == 1:
+            # Second tool (search) — guarded by having clues
             children.append(ConditionNode(
                 f"has_clues_{step_id}",
                 lambda bb: any([bb.get("merchant_name"), bb.get("amount")]),
