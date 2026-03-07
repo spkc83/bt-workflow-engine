@@ -11,15 +11,20 @@ procedure:
     - suspicious transaction
 
   steps:
+    - id: collect_alert_id
+      instruction: >
+        Check the analyst's message for a fraud alert ID (e.g., "FA-001", "FA-123").
+        If the alert ID is present, proceed to look it up. If not, ask the analyst
+        to provide the alert ID they want to investigate.
+      action: collect_info
+      required_info: [alert_id]
+      next_step: receive_alert
+
     - id: receive_alert
       instruction: >
-        Check whether the analyst's message already contains a fraud alert ID (e.g.,
-        "FA-001"). If the alert ID IS already present, immediately call `get_fraud_alert`
-        with that ID — do NOT respond with just an acknowledgment and wait for another message.
-        If the alert ID is NOT present, ask the analyst to provide it.
-        Once the alert is retrieved, its details will include: alert type, creation timestamp,
-        the associated account or customer, the triggering event, and an initial risk score.
-        If the alert cannot be found, transition to alert_not_found.
+        Retrieve the fraud alert details. The alert details will include: alert type,
+        creation timestamp, the associated account or customer, the triggering event,
+        and an initial risk score. If the alert cannot be found, ask to verify the ID.
       action: tool_call
       tool: get_fraud_alert
       on_success: review_alert_details
