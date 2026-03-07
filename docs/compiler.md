@@ -358,7 +358,10 @@ tools:
     result_key: order_data
 on_success: step_after_success
 on_failure: step_after_failure
+await_input: false  # optional: skip pause for intermediate steps
 ```
+
+**`await_input`**: By default, `tool_call` steps with `on_success` targeting a non-`end` step insert a `UserInputNode` pause after the response. Set `await_input: false` on intermediate steps (evidence gathering, internal lookups, escalations, documentation) that should flow through automatically. Set `await_input: true` to force a pause on steps that would otherwise auto-continue.
 
 **`tool_call`** (multiple tools) — guard conditions select the tool:
 ```yaml

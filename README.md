@@ -322,12 +322,22 @@ Unparseable conditions (e.g., `"multiple high-confidence fraud indicators presen
 
 ### Pause Points (`await_input`)
 
-The tree pauses at `UserInputNode` boundaries so the user sees each step's response before the workflow continues. By default, tool_call steps with `on_success` targeting another step insert a pause. Override with `await_input: true/false` in YAML:
+The tree pauses at `UserInputNode` boundaries so the user sees each step's response before the workflow continues. By default, `tool_call` steps with `on_success` targeting a non-`end` step insert a pause (waiting for user input before continuing).
+
+Use `await_input: false` on intermediate steps that should flow through automatically without waiting for user input — e.g., internal lookups, evidence gathering, escalations, documentation steps. Use `await_input: true` to force a pause on steps that would otherwise auto-continue.
 
 ```yaml
-- id: process_refund
+# Intermediate step — flows through without pausing
+- id: gather_evidence
   action: tool_call
-  await_input: true   # force pause after this step
+  await_input: false   # don't wait for user input
+  on_success: assess_risk
+  # ...
+
+# Customer-facing step — pauses for user response (default behavior)
+- id: propose_resolution
+  action: tool_call
+  await_input: true    # force pause after this step
   # ...
 ```
 
