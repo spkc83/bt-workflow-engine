@@ -112,6 +112,7 @@ procedure:
           result_key: transaction_data
       on_success: check_device_info
       on_failure: check_device_info
+      await_input: false
 
     - id: check_device_info
       name: "Check Device Fingerprint"
@@ -129,6 +130,7 @@ procedure:
           result_key: device_data
       on_success: assess_risk
       on_failure: assess_risk
+      await_input: false
 
     - id: assess_risk
       name: "Assess Risk Determination"
@@ -174,6 +176,7 @@ procedure:
           result_key: flag_result
       on_success: document_findings
       on_failure: document_findings
+      await_input: false
 
     - id: take_action_clear
       name: "Clear Alert — False Positive"
@@ -192,6 +195,7 @@ procedure:
           result_key: close_result
       on_success: document_findings
       on_failure: document_findings
+      await_input: false
 
     - id: escalate_senior
       name: "Escalate to Senior Analyst"
@@ -211,6 +215,7 @@ procedure:
           result_key: escalation_result
       on_success: document_findings
       on_failure: document_findings
+      await_input: false
 
     - id: document_findings
       name: "Document Findings"
@@ -229,6 +234,7 @@ procedure:
           result_key: case_note_result
       on_success: close_or_resolve
       on_failure: close_or_resolve
+      await_input: false
 
     - id: alert_not_found
       name: "Alert Not Found"
