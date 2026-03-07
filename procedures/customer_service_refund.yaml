@@ -137,6 +137,7 @@ procedure:
           result_key: refund_result
       on_success: close_case
       on_failure: escalate_case
+      await_input: false
 
     - id: deny_refund_window
       name: "Deny Refund — Outside Window"
@@ -181,6 +182,7 @@ procedure:
           result_key: store_credit_result
       on_success: close_case
       on_failure: escalate_case
+      await_input: false
 
     - id: order_not_found
       name: "Order Not Found"
@@ -223,6 +225,7 @@ procedure:
           result_key: cancellation_result
       on_success: close_case
       on_failure: escalate_case
+      await_input: false
 
     - id: escalate_case
       name: "Escalate to Supervisor"
@@ -241,6 +244,7 @@ procedure:
           result_key: escalation_result
       on_success: close_case
       on_failure: close_case
+      await_input: false
 
     - id: close_case
       name: "Close Case"

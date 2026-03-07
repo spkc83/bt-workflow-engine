@@ -190,6 +190,7 @@ procedure:
           result_key: escalation_result
       on_success: close_case
       on_failure: close_case
+      await_input: false
 
     - id: document_complaint
       name: "Document Complaint"
@@ -212,6 +213,7 @@ procedure:
           result_key: case_note_result
       on_success: close_case
       on_failure: close_case
+      await_input: false
 
     - id: close_case
       name: "Close Case"
