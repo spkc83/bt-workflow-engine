@@ -78,18 +78,14 @@ procedure:
         proceed directly to attempting resolution. Do not announce the classification to the
         customer; simply route internally to the appropriate next step.
       conditions:
-        - condition:
-            field: complaint_type
-            operator: in
-            value: ["product_quality", "delivery"]
-          condition_description: "Complaint is about product quality or delivery — look up order"
+        - condition_description: "Complaint is about product quality or delivery — look up order"
           next_step: lookup_context
-        - condition:
-            field: complaint_type
-            operator: in
-            value: ["service", "billing"]
-          condition_description: "Complaint is about service or billing — resolve directly"
+        - condition_description: "Complaint is about service or billing — resolve directly"
           next_step: attempt_resolution
+      classify_categories:
+        - lookup_context
+        - attempt_resolution
+      classify_result_key: identify_issue_result
 
     - id: lookup_context
       name: "Look Up Order Context"
