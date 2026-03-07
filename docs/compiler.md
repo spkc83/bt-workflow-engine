@@ -1,6 +1,6 @@
-# BT Compiler: YAML-to-py_trees Behaviour Tree Compiler
+# BT Compiler: YAML-to-BehaviourTree Compiler
 
-The compiler (`bt_engine/compiler/`) converts YAML procedure definitions into fully functional py_trees behaviour trees. This enables workflows to be created, modified, and deployed by editing YAML files — no Python code changes required.
+The compiler (`bt_engine/compiler/`) converts YAML procedure definitions into fully functional async behaviour trees. This enables workflows to be created, modified, and deployed by editing YAML files — no Python code changes required.
 
 ## Table of Contents
 
@@ -17,12 +17,11 @@ The compiler (`bt_engine/compiler/`) converts YAML procedure definitions into fu
   - [Constrained Decoding Helpers](#constrained-decoding-helpers)
   - [Ingestion Pipeline](#ingestion-pipeline)
 - [YAML Procedure Format](#yaml-procedure-format)
-  - [Legacy Format](#legacy-format)
-  - [Fine-Grained Format](#fine-grained-format)
+  - [Standardized Format](#standardized-format)
 - [Action Types](#action-types)
 - [Condition Grammar](#condition-grammar)
-  - [String Conditions (Legacy)](#string-conditions-legacy)
-  - [Structured Conditions (Fine-Grained)](#structured-conditions-fine-grained)
+  - [String Conditions](#string-conditions)
+  - [Structured Conditions](#structured-conditions)
 - [Cycle Handling](#cycle-handling)
 - [Adding New Tools](#adding-new-tools)
 - [Ingesting Plain English SOPs](#ingesting-plain-english-sops)
@@ -240,14 +239,14 @@ manager.reload_all()
 
 **File**: `bt_engine/compiler/schemas.py`
 
-Defines the fine-grained procedure format as Pydantic models. These serve triple duty: constrained decoding schema for LLM output, validation, and documentation.
+Defines the standardized procedure format as Pydantic models. These serve triple duty: constrained decoding schema for LLM output, validation, and documentation.
 
 **Key models**:
 
 | Model | Purpose |
 |-------|---------|
 | `Procedure` | Top-level procedure with metadata, tools, and steps |
-| `ProcedureStep` | A single step with action-specific fine-grained fields |
+| `ProcedureStep` | A single step with action-specific standardized fields |
 | `StructuredCondition` | Machine-readable condition: `{field, operator, value}` |
 | `ConditionBranch` | An evaluate branch: structured condition or LLM-classified |
 | `ToolConfig` | Tool with explicit `arg_mappings` and `guard_condition` |
@@ -330,56 +329,101 @@ procedure:
       # ... action-specific fields
 ```
 
-### Step Fields by Action
+### Standardized Format
 
-**`collect_info`**:
+All procedure YAML files use a single standardized format with structured, machine-readable fields.
+
+**`collect_info`** — extract fields with descriptions:
 ```yaml
 action: collect_info
-required_info: [field1, field2]  # What to extract
-extract_keys: [key1, key2]      # Optional: override inferred keys
-next_step: next_step_id         # Where to go after collection
+extract_fields:
+  - key: order_id
+    description: "The order number (e.g., ORD-123)"
+    examples: ["ORD-123", "ORD-789"]
+  - key: merchant_name
+    description: "Store or brand name"
+    examples: ["TechMart", "SportZone"]
+required_fields: [order_id]
+next_step: next_step_id
 ```
 
-**`tool_call`** (single tool):
+**`tool_call`** (single tool) — explicit arg_mappings:
 ```yaml
 action: tool_call
-tool: tool_name                  # Primary tool
+tools:
+  - name: lookup_order
+    arg_mappings:
+      - param: order_id
+        source: order_id
+    result_key: order_data
 on_success: step_after_success
 on_failure: step_after_failure
-arg_keys: {param: bb_key}       # Optional: override registry defaults
-fixed_args: {param: value}      # Optional: constant arguments
-result_key: my_result            # Optional: where to store result
 ```
 
-**`tool_call`** (multiple tools):
+**`tool_call`** (multiple tools) — guard conditions select the tool:
 ```yaml
 action: tool_call
-tool: primary_tool
-tools:                           # Tried in order with conditions
-  - lookup_order                 # First: requires exact ID
-  - search_orders                # Second: requires search clues
+tools:
+  - name: lookup_order
+    arg_mappings:
+      - param: order_id
+        source: order_id
+    result_key: order_data
+    guard_condition:
+      field: order_id
+      operator: neq
+      value: ""
+  - name: search_orders
+    arg_mappings:
+      - param: customer_id
+        source: customer_id
+      - param: merchant_name
+        source: merchant_name
+    result_key: search_result
 on_success: next_step
 on_failure: fallback_step
 ```
 
-**`evaluate`**:
+**`evaluate`** (deterministic) — structured conditions:
 ```yaml
 action: evaluate
 conditions:
-  - if: "field == value"         # Parseable → ConditionNode
-    next_step: target_step
-  - if: "subjective condition"   # Unparseable → LLMClassifyNode
-    next_step: other_step
+  - condition:
+      field: order_date
+      operator: within_days
+      value: 30
+    condition_description: "Order within 30-day return window"
+    next_step: process_refund
+  - condition:
+      field: order_status
+      operator: eq
+      value: processing
+    condition_description: "Order still processing"
+    next_step: cancel_order
 ```
 
-**`inform`** (with options):
+**`evaluate`** (subjective) — LLM classification with explicit categories:
+```yaml
+action: evaluate
+classify_categories: [fraud_confirmed, false_positive, needs_review]
+classify_result_key: triage_result
+conditions:
+  - condition_description: "Evidence strongly suggests fraud"
+    next_step: flag_account
+  - condition_description: "Appears to be a false positive"
+    next_step: close_alert
+```
+
+**`inform`** (with options) — detection keywords for routing:
 ```yaml
 action: inform
 options:
-  - label: "Customer accepts"
-    next_step: accept_path
+  - label: "Customer accepts store credit"
+    next_step: offer_store_credit
+    detection_keywords: ["credit", "store", "accept", "yes", "fine", "ok"]
   - label: "Customer requests escalation"
-    next_step: escalate_path
+    next_step: escalate_case
+    detection_keywords: ["escalat", "supervisor", "manager", "not satisf"]
 ```
 
 **`inform`** (simple loop-back):
@@ -393,82 +437,14 @@ next_step: earlier_step          # Back-edge: runner re-ticks from root
 action: end
 ```
 
-### Fine-Grained Format
-
-The fine-grained format adds explicit, machine-readable fields that give the compiler richer, less ambiguous input. All fine-grained fields are **optional** — the compiler checks for them first, then falls back to legacy parsing.
-
-**Structured conditions** (instead of string conditions):
-```yaml
-conditions:
-  - condition:
-      field: order_date
-      operator: within_days
-      value: 30
-    next_step: process_refund
-  - condition:
-      field: order_status
-      operator: eq
-      value: processing
-    next_step: cancel_order
-```
-
-**Explicit tool arg_mappings** (instead of inferred):
-```yaml
-tool_configs:
-  - name: lookup_order
-    arg_mappings:
-      - param: order_id
-        source: order_id
-    result_key: order_data
-  - name: search_orders
-    arg_mappings:
-      - param: customer_id
-        source: customer_id
-    result_key: search_results
-```
-
-**Rich extract_fields** (instead of flat required_info):
-```yaml
-extract_fields:
-  - key: order_id
-    description: "The order number (e.g., ORD-123)"
-    examples: ["ORD-123", "ORD-789"]
-  - key: merchant_name
-    description: "Store or brand name"
-    examples: ["TechMart", "SportZone"]
-required_fields: [order_id]
-```
-
-**Detection keywords for inform options** (instead of implicit label matching):
-```yaml
-options:
-  - label: "Customer accepts store credit"
-    next_step: offer_store_credit
-    detection_keywords: ["credit", "store", "accept", "yes", "fine", "ok"]
-  - label: "Customer requests escalation"
-    next_step: escalate_case
-    detection_keywords: ["escalat", "supervisor", "manager", "not satisf"]
-```
-
-**Explicit classify_categories** (instead of implicit fallback):
-```yaml
-action: evaluate
-classify_categories: [fraud_confirmed, false_positive, needs_review]
-classify_result_key: triage_result
-conditions:
-  - condition_description: "Evidence strongly suggests fraud"
-    next_step: flag_account
-  - condition_description: "Appears to be a false positive"
-    next_step: close_alert
-```
-
-| Aspect | Legacy | Fine-Grained |
-|--------|--------|-------------|
-| Conditions | `if: "order_date within 30 days"` (string) | `condition: {field, operator, value}` (structured) |
-| Tool args | Inferred from function signature | Explicit `arg_mappings: [{param, source}]` |
-| Extract fields | `required_info: [field1]` (flat strings) | `extract_fields: [{key, description, examples}]` |
-| Inform options | Label-based keyword guessing | `detection_keywords: [kw1, kw2]` |
-| LLM classification | Implicit (unparseable string → LLM) | Explicit `classify_categories` + `classify_result_key` |
+| Feature | Description |
+|---------|-------------|
+| Structured conditions | `condition: {field, operator, value}` — compiled to ConditionNode predicates |
+| Explicit tool arg_mappings | `arg_mappings: [{param, source}]` — no reliance on signature inference |
+| Rich extract_fields | `extract_fields: [{key, description, examples}]` — guides LLM extraction |
+| Detection keywords | `detection_keywords: [kw1, kw2]` — deterministic inform option routing |
+| Explicit classification | `classify_categories` + `classify_result_key` — for subjective conditions |
+| Guard conditions | `guard_condition: {field, operator, value}` — selects which tool to invoke |
 
 ---
 
@@ -571,9 +547,9 @@ The condition parser supports these patterns via regex matching:
 
 **Unparseable fallback**: Any condition that doesn't match these patterns returns `None`. The step compiler then uses `LLMClassifyNode` instead, with categories derived from the condition's `next_step` values. This handles subjective conditions like fraud risk assessment.
 
-### Structured Conditions (Fine-Grained)
+### Structured Conditions
 
-The fine-grained format uses `StructuredCondition` objects instead of strings. These are already parsed — no regex needed.
+The standardized format uses `StructuredCondition` objects instead of strings. These are already parsed — no regex needed.
 
 ```python
 from bt_engine.compiler.condition_parser import parse_structured_condition
@@ -593,7 +569,7 @@ assert pred({"alert_data": {"severity": "high"}}) is True
 
 **Field resolution**: Uses `field_path` if provided (e.g., `"alert_data.severity"`), otherwise falls back to `FIELD_LOCATIONS` lookup, then top-level `bb_dict`.
 
-**Compiler behavior**: The step compiler checks each condition branch for a `condition` object first. If found, it uses `parse_structured_condition()`. If not, it falls back to `parse_condition()` on the legacy `if` string.
+**Compiler behavior**: The step compiler checks each condition branch for a `condition` object first. If found, it uses `parse_structured_condition()`. If not, it falls back to `parse_condition()` on an `if` string (for backward compatibility).
 
 ---
 
@@ -648,7 +624,7 @@ def create_default_registry() -> ToolRegistry:
 
 ## Ingesting Plain English SOPs
 
-The ingestion pipeline (`bt_engine/compiler/ingestion.py`) converts plain English procedure documents into validated, fine-grained YAML procedures using a multi-pass LLM pipeline with constrained decoding.
+The ingestion pipeline (`bt_engine/compiler/ingestion.py`) converts plain English procedure documents into validated, standardized YAML procedures using a multi-pass LLM pipeline with constrained decoding.
 
 ### Usage
 
@@ -735,9 +711,9 @@ Free-text LLM output requires fuzzy string matching, JSON repair, and schema val
 
 A single-pass "generate the whole procedure" approach produces lower quality output because it asks the LLM to do too many things at once. Multi-pass allows each stage to focus on one concern (structure, details, refinement) with targeted constrained schemas. It also enables targeted error correction — Pass 4 can fix specific validation errors without regenerating the whole procedure.
 
-### Why backward compatibility with legacy format?
+### Why keep backward-compatible parsing?
 
-Existing YAML procedures shouldn't break when the fine-grained format is introduced. The compiler checks for structured fields first (`condition` object, `extract_fields`, `tool_configs`, `detection_keywords`), then falls back to legacy parsing (`if` strings, `required_info`, tool name strings, label-based routing). This allows gradual migration.
+The compiler checks for standardized structured fields first (`condition` object, `extract_fields`, tool `arg_mappings`, `detection_keywords`), then falls back to simpler parsing (`if` strings, `required_info`, tool name strings, label-based routing). This ensures older or externally-generated YAML files still compile correctly.
 
 ### Why `LLMClassifyNode` has a free-text fallback?
 

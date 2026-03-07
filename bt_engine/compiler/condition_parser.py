@@ -1,8 +1,8 @@
-"""Condition parser: converts YAML condition strings into Python predicate callables.
+"""Condition parser: converts YAML conditions into Python predicate callables.
 
 Supports two input formats:
-  1. StructuredCondition objects (from fine-grained YAML / ingestion pipeline)
-  2. Legacy string-based conditions with regex grammar
+  1. StructuredCondition dicts (standardized format: field, operator, value)
+  2. String-based conditions with regex grammar (for backward compatibility)
 
 String grammar:
   field == value, field >= number, field in [vals], field within N days,

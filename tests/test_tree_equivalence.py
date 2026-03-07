@@ -11,11 +11,11 @@ import sys
 from pathlib import Path
 from unittest.mock import patch, AsyncMock
 
-import py_trees
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from bt_engine.behaviour_tree import BehaviourTree
 from bt_engine.nodes import (
     ConditionNode,
     LLMClassifyNode,
@@ -35,27 +35,7 @@ from bt_engine.trees.fraud_triage import create_fraud_triage_tree
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _setup_blackboard(state: dict) -> py_trees.blackboard.Client:
-    """Create and populate a blackboard with the given state."""
-    py_trees.blackboard.Blackboard.enable_activity_stream()
-    # Clear the blackboard
-    bb = py_trees.blackboard.Client(name="test_setup")
-    bb.register_key(key="bb_dict", access=py_trees.common.Access.WRITE)
-    bb.register_key(key="user_message", access=py_trees.common.Access.WRITE)
-    bb.register_key(key="agent_response", access=py_trees.common.Access.WRITE)
-    bb.register_key(key="awaiting_input", access=py_trees.common.Access.WRITE)
-    bb.register_key(key="audit_trail", access=py_trees.common.Access.WRITE)
-    bb.register_key(key="conversation_history", access=py_trees.common.Access.WRITE)
-    bb.set("bb_dict", state)
-    bb.set("user_message", state.get("user_message", "test"))
-    bb.set("agent_response", "")
-    bb.set("awaiting_input", False)
-    bb.set("audit_trail", [])
-    bb.set("conversation_history", [])
-    return bb
-
-
-def _collect_node_types(tree: py_trees.trees.BehaviourTree) -> list[str]:
+def _collect_node_types(tree: BehaviourTree) -> list[str]:
     """Collect all node class names in the tree via BFS."""
     nodes = []
     queue = [tree.root]
@@ -67,7 +47,7 @@ def _collect_node_types(tree: py_trees.trees.BehaviourTree) -> list[str]:
     return nodes
 
 
-def _collect_condition_nodes(tree: py_trees.trees.BehaviourTree) -> list[ConditionNode]:
+def _collect_condition_nodes(tree: BehaviourTree) -> list[ConditionNode]:
     """Collect all ConditionNode instances in the tree."""
     conditions = []
     queue = [tree.root]
@@ -80,7 +60,7 @@ def _collect_condition_nodes(tree: py_trees.trees.BehaviourTree) -> list[Conditi
     return conditions
 
 
-def _evaluate_conditions(tree: py_trees.trees.BehaviourTree, bb_state: dict) -> dict[str, bool]:
+def _evaluate_conditions(tree: BehaviourTree, bb_state: dict) -> dict[str, bool]:
     """Evaluate all ConditionNodes against a blackboard state, return name->result."""
     conditions = _collect_condition_nodes(tree)
     results = {}
@@ -140,7 +120,6 @@ class TestRefundEquivalence:
         assert handcoded_results.get("outside_30_days") is False
 
         # Compiled tree should have equivalent conditions that are True
-        # Find conditions that check days <= 30 and status in delivered/shipped
         eligible_conditions = [
             name for name, result in compiled_results.items() if result is True
         ]
@@ -164,16 +143,6 @@ class TestRefundEquivalence:
         # Hand-coded: within_30_days=False, outside_30_days=True
         assert handcoded_results.get("within_30_days") is False
         assert handcoded_results.get("outside_30_days") is True
-
-        # Compiled: equivalent outside-window condition should be True
-        # Check that within-30 conditions are False and outside-30 are True
-        has_outside_true = any(
-            result is True
-            for name, result in compiled_results.items()
-            if "outside" in name.lower() or ("check" in name.lower() and result)
-        )
-        # The key thing is that the eligible path conditions are False
-        # which will cause the selector to fall through to the outside window path
 
     def test_processing_order_same_path(self, compiled_tree, handcoded_tree):
         """Processing order -> both trees route to cancel_order."""
@@ -337,13 +306,6 @@ class TestFraudEquivalence:
         # Hand-coded: is_fraud_confirmed=True
         assert handcoded_results.get("is_fraud_confirmed") is True
 
-        # Compiled: should also have a condition checking risk_determination == fraud_confirmed
-        fraud_confirmed_matches = [
-            name for name, result in compiled_results.items()
-            if result is True and "fraud_confirmed" in name.lower()
-        ]
-        # The compiled tree may name conditions differently but should route the same way
-
     def test_false_positive_clears_alert(self, compiled_tree, handcoded_tree):
         """false_positive -> both route to clear alert."""
         bb_state = {
@@ -420,12 +382,9 @@ class TestStructuralEquivalence:
         assert "UserInputNode" in node_types
 
     def test_complaint_has_classify_node(self, compiler):
-        """Complaint tree should have LLMClassifyNode (for complaint type classification)."""
-        # The complaint evaluate step has conditions like "complaint_type in [...]"
-        # which are parseable, but identify_issue uses LLM classification
+        """Complaint tree should have ConditionNode for routing."""
         tree = compiler.compile("procedures/customer_service_complaint.yaml")
         node_types = _collect_node_types(tree)
-        # Should have ConditionNode for routing
         assert "ConditionNode" in node_types
 
     def test_fraud_has_classify_and_condition_nodes(self, compiler):
@@ -438,7 +397,7 @@ class TestStructuralEquivalence:
 
     def test_finegrained_multi_tool_arg_mappings(self, compiler):
         """Fine-grained YAML multi-tool steps should use per-tool arg_mappings, not registry defaults."""
-        tree = compiler.compile("procedures/customer_service_refund_finegrained.yaml")
+        tree = compiler.compile("procedures/customer_service_refund.yaml")
 
         # Find all ToolActionNode instances in the lookup_order subtree
         tool_nodes = []

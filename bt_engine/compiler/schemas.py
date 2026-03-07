@@ -1,12 +1,9 @@
-"""Pydantic models for the fine-grained procedure format.
+"""Pydantic models for the standardized procedure format.
 
 These serve triple duty:
   (a) Constrained decoding schema for LLM output (via Google GenAI response_schema)
   (b) Validation of ingested procedures
   (c) Self-documenting procedure specification
-
-Backward compatible: the compiler checks for structured fields first,
-falls back to legacy string-based parsing.
 """
 
 from __future__ import annotations

@@ -3,8 +3,8 @@
 Validates required fields, normalizes optional fields with defaults,
 and returns a clean dict ready for compilation.
 
-Supports both legacy format (string conditions, flat required_info) and
-fine-grained format (structured conditions, extract_fields, arg_mappings).
+Uses the standardized format: structured conditions, extract_fields,
+arg_mappings, guard_conditions, and detection_keywords.
 """
 
 from __future__ import annotations
@@ -101,10 +101,7 @@ def _validate_step(step: dict, index: int, source: Path) -> None:
 
 
 def _normalize_steps(proc: dict) -> None:
-    """Normalize optional fields with sensible defaults.
-
-    Handles both legacy format and fine-grained format fields.
-    """
+    """Normalize optional fields with sensible defaults."""
     for step in proc["steps"]:
         # Ensure instruction has a default
         step.setdefault("instruction", "")
