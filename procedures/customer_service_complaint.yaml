@@ -2,7 +2,8 @@ procedure:
   id: cs_complaint
   name: "Customer Service - Complaint Handling"
   description: "Handle customer complaints about products, services, or orders"
-  version: "1.0"
+  version: "2.0"
+  domain: customer_service
   trigger_intents:
     - complaint
     - unhappy
@@ -11,8 +12,23 @@ procedure:
     - issue with
     - bad experience
 
+  available_tools:
+    - lookup_order
+    - search_orders
+    - escalate_to_supervisor
+    - add_case_note
+    - update_case_status
+
+  data_context:
+    - order_id
+    - customer_id
+    - complaint_type
+    - order_data
+
   steps:
     - id: greet_and_collect
+      name: "Collect Complaint Details"
+      action: collect_info
       instruction: >
         Check the customer's message for complaint details and ANY order identification
         clues — this includes: an explicit order number (e.g., "ORD-123"), OR natural
@@ -24,12 +40,29 @@ procedure:
         Only if the message contains NO complaint details at all, greet warmly with empathy
         and ask them to describe what happened and what they purchased (store name, item,
         approximate amount). Never ask for an order ID.
-      action: collect_info
-      required_info:
+      extract_fields:
+        - key: complaint_description
+          description: "Description of the customer's complaint"
+          examples: ["defective product", "late delivery", "wrong charge"]
+        - key: order_id
+          description: "Explicit order number like ORD-123"
+          examples: ["ORD-123", "ORD-789"]
+        - key: merchant_name
+          description: "Store or merchant name from the customer's description"
+          examples: ["TechMart", "SportZone"]
+        - key: item_description
+          description: "Description of the item purchased"
+          examples: ["headphones", "running shoes"]
+        - key: amount
+          description: "Approximate dollar amount of the order"
+          examples: ["$80", "about 50 dollars"]
+      required_fields:
         - complaint_description
       next_step: identify_issue
 
     - id: identify_issue
+      name: "Classify Complaint Type"
+      action: evaluate
       instruction: >
         Carefully review the complaint description provided by the customer and classify the
         complaint into one of the following categories:
@@ -44,14 +77,23 @@ procedure:
         product and delivery complaints, look up the order. For service and billing complaints,
         proceed directly to attempting resolution. Do not announce the classification to the
         customer; simply route internally to the appropriate next step.
-      action: evaluate
       conditions:
-        - if: "complaint_type in [product_quality, delivery]"
+        - condition:
+            field: complaint_type
+            operator: in
+            value: ["product_quality", "delivery"]
+          condition_description: "Complaint is about product quality or delivery — look up order"
           next_step: lookup_context
-        - if: "complaint_type in [service, billing]"
+        - condition:
+            field: complaint_type
+            operator: in
+            value: ["service", "billing"]
+          condition_description: "Complaint is about service or billing — resolve directly"
           next_step: attempt_resolution
 
     - id: lookup_context
+      name: "Look Up Order Context"
+      action: tool_call
       instruction: >
         Pull up the relevant order using the information available. Choose the right tool:
         - If the customer gave an EXACT order ID (e.g., "ORD-123"), use `lookup_order`.
@@ -65,15 +107,31 @@ procedure:
         If the search returns multiple matches, present them and ask the customer to confirm.
         Whether the lookup succeeds or fails, proceed to attempt a resolution — if the lookup
         fails, work with the information the customer has provided directly.
-      action: tool_call
-      tool: lookup_order
       tools:
-        - lookup_order
-        - search_orders
+        - name: lookup_order
+          arg_mappings:
+            - param: order_id
+              source: order_id
+          result_key: order_data
+          guard_condition:
+            field: order_id
+            operator: neq
+            value: ""
+        - name: search_orders
+          arg_mappings:
+            - param: customer_id
+              source: customer_id
+            - param: merchant_name
+              source: merchant_name
+            - param: amount
+              source: amount
+          result_key: search_result
       on_success: attempt_resolution
       on_failure: attempt_resolution
 
     - id: attempt_resolution
+      name: "Propose Resolution"
+      action: inform
       instruction: >
         Based on the complaint type and any order context retrieved, offer an appropriate
         resolution. Tailor your response to the specific situation:
@@ -90,14 +148,34 @@ procedure:
         to choose the resolution that works best for them. If the customer is satisfied with
         the proposed resolution, proceed to document_complaint. If the customer remains
         dissatisfied or requests supervisor involvement, proceed to escalate_if_needed.
-      action: inform
       options:
         - label: "Customer accepts proposed resolution"
+          description: "Customer is satisfied with the proposed resolution"
           next_step: document_complaint
+          detection_keywords:
+            - accept
+            - "yes"
+            - okay
+            - sure
+            - fine
+            - thanks
+            - great
+            - sounds good
         - label: "Customer is unsatisfied or requests escalation"
+          description: "Customer wants to speak with a supervisor"
           next_step: escalate_if_needed
+          detection_keywords:
+            - escalat
+            - supervisor
+            - manager
+            - "no"
+            - not acceptable
+            - unsatisfied
+            - speak to someone
 
     - id: escalate_if_needed
+      name: "Escalate to Supervisor"
+      action: tool_call
       instruction: >
         If the customer's complaint could not be resolved through standard options, or if the
         customer explicitly requests to speak with a manager or supervisor, escalate the case.
@@ -105,17 +183,21 @@ procedure:
         identified, what resolutions were offered, and why the customer is still unsatisfied.
         Inform the customer respectfully that you are escalating their case and provide them
         with a case reference number and expected response time.
-        Example: "I completely understand, and I want to make sure you get the resolution you
-        deserve. I'm escalating your case to my supervisor right now with full notes on
-        everything we've discussed. Your case reference number is [CASE_ID], and you can
-        expect to hear back within [TIMEFRAME]. I'm sorry we couldn't resolve this directly,
-        and I appreciate your patience."
-      action: tool_call
-      tool: escalate_to_supervisor
+      tools:
+        - name: escalate_to_supervisor
+          arg_mappings:
+            - param: case_id
+              source: case_id
+          fixed_args:
+            reason: "Customer complaint escalation"
+            priority: "medium"
+          result_key: escalation_result
       on_success: close_case
       on_failure: close_case
 
     - id: document_complaint
+      name: "Document Complaint"
+      action: tool_call
       instruction: >
         Record detailed case notes documenting the complaint and the resolution provided.
         The notes should include: the nature of the complaint (category and description),
@@ -124,23 +206,34 @@ procedure:
         important for quality assurance and trend analysis. This step should be completed
         before closing the case. The customer does not need to be informed of this step
         explicitly — simply note internally that you are documenting the interaction.
-      action: tool_call
-      tool: add_case_note
+      tools:
+        - name: add_case_note
+          arg_mappings:
+            - param: case_id
+              source: case_id
+          fixed_args:
+            note: "Complaint documented"
+          result_key: case_note_result
       on_success: close_case
       on_failure: close_case
 
     - id: close_case
+      name: "Close Case"
+      action: tool_call
       instruction: >
         Bring the interaction to a positive close. Summarize the resolution that was reached
         and confirm with the customer that they are satisfied before ending the conversation.
         Ask if there is anything else you can help them with today. Update the case status
         to reflect the outcome (resolved, escalated, pending follow-up, etc.).
-        Be genuine and appreciative: "To summarize, [brief summary of what was done]. I
-        really hope this resolves things for you, and I'm sorry again for the experience
-        you had. Is there anything else I can help you with today? Thank you for bringing
-        this to our attention — feedback like yours helps us improve."
-      action: tool_call
-      tool: update_case_status
+      tools:
+        - name: update_case_status
+          arg_mappings:
+            - param: case_id
+              source: case_id
+          fixed_args:
+            status: "resolved"
+            notes: "Complaint case resolved"
+          result_key: close_result
       on_success: end
       on_failure: end
       next_step: end

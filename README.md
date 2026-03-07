@@ -1,6 +1,6 @@
 # BT Workflow Engine
 
-A **behaviour tree workflow engine** for customer service automation. Workflows are defined as YAML procedures and compiled into deterministic [py_trees](https://py-trees.readthedocs.io/) behaviour trees at runtime. LLMs handle natural language (response generation, extraction, classification) while Python conditions control all routing decisions.
+A **behaviour tree workflow engine** for customer service automation. Workflows are defined as YAML procedures and compiled into deterministic async behaviour trees at runtime. LLMs handle natural language (response generation, extraction, classification) while Python conditions control all routing decisions.
 
 ## Architecture
 
@@ -64,7 +64,7 @@ bt-workflow-engine/
 │       ├── step_compilers.py     # Per-action subtree builders
 │       ├── tool_registry.py      # Tool name → async function mapping
 │       ├── tree_manager.py       # Runtime management, intent routing
-│       ├── schemas.py            # Pydantic models for fine-grained format
+│       ├── schemas.py            # Pydantic models for standardized format
 │       ├── llm_utils.py          # Constrained decoding helpers
 │       └── ingestion.py          # LLM pipeline: plain text → procedure
 ├── tools/                        # Async tool functions
@@ -76,7 +76,6 @@ bt-workflow-engine/
 │   └── seed.py                   # Mock data seeding
 ├── procedures/                   # YAML procedure definitions
 │   ├── customer_service_refund.yaml
-│   ├── customer_service_refund_finegrained.yaml  # Fine-grained format example
 │   ├── customer_service_complaint.yaml
 │   └── fraud_ops_alert_triage.yaml
 ├── examples/                     # Usage examples
@@ -134,14 +133,13 @@ pytest tests/test_schemas.py tests/test_ingestion.py tests/test_constrained.py -
 
 ## Workflows
 
-Four built-in workflows are provided as YAML procedures:
+Three built-in workflows are provided as YAML procedures (all use the standardized format):
 
-| Workflow | File | Format | Intents | Steps |
-|----------|------|--------|---------|-------|
-| **Refund** | `customer_service_refund.yaml` | Legacy | refund, return, money back, cancel order | 9 |
-| **Refund (Fine-Grained)** | `customer_service_refund_finegrained.yaml` | Fine-grained | refund, return, money back, cancel order | 11 |
-| **Complaint** | `customer_service_complaint.yaml` | Legacy | complaint, unhappy, dissatisfied | 6 |
-| **Fraud Triage** | `fraud_ops_alert_triage.yaml` | Legacy | fraud alert, suspicious activity | 9 |
+| Workflow | File | Intents | Steps |
+|----------|------|---------|-------|
+| **Refund** | `customer_service_refund.yaml` | refund, return, money back, cancel order | 11 |
+| **Complaint** | `customer_service_complaint.yaml` | complaint, unhappy, dissatisfied | 7 |
+| **Fraud Triage** | `fraud_ops_alert_triage.yaml` | fraud alert, suspicious activity | 11 |
 
 ### Creating a New Workflow
 
@@ -159,9 +157,9 @@ python examples/ingest_demo.py
 python examples/ingest_demo.py path/to/your_sop.txt --output procedures/my_proc.yaml
 ```
 
-**Option B: Write fine-grained YAML** (recommended for precise control):
+**Option B: Write YAML directly** (recommended for precise control):
 
-The fine-grained format provides structured conditions, explicit tool arg mappings, extract field descriptions, and detection keywords. See `procedures/customer_service_refund_finegrained.yaml` for a full example.
+The standardized format provides structured conditions, explicit tool arg mappings, extract field descriptions, and detection keywords. See any file in `procedures/` for examples.
 
 ```yaml
 procedure:
@@ -219,38 +217,6 @@ procedure:
     - id: deny
       action: end
       instruction: "Denied."
-```
-
-**Option C: Write legacy YAML** (simple format, string-based conditions):
-
-```yaml
-procedure:
-  id: my_workflow
-  name: "My Custom Workflow"
-  version: "1.0"
-  trigger_intents: [xyz_request]
-
-  steps:
-    - id: greet
-      instruction: "Greet the customer and ask for details."
-      action: collect_info
-      required_info: [request_details]
-      next_step: process
-
-    - id: process
-      instruction: "Process the request."
-      action: tool_call
-      tool: update_case_status
-      on_success: close
-      on_failure: escalate
-
-    - id: close
-      instruction: "Confirm completion."
-      action: tool_call
-      tool: update_case_status
-      on_success: end
-      on_failure: end
-      next_step: end
 ```
 
 2. Reload procedures (no restart needed):
@@ -402,7 +368,7 @@ The test suite validates the full stack:
 - **Node tests** (16): Each node type in isolation
 - **Runner tests** (10): Multi-turn execution, branching, tracing
 - **Tool tests** (13): All 14 tool functions against SQLite
-- **Compiler tests** (47): Condition parser, tool registry, YAML parser, full compilation, tree manager (includes fine-grained format)
+- **Compiler tests** (47): Condition parser, tool registry, YAML parser, full compilation, tree manager
 - **Equivalence tests** (17): Compiled trees produce same routing as hand-coded trees
 - **Schema tests** (21): Pydantic models, structured condition predicates, serialization round-trips
 - **Constrained decoding tests** (8): `generate_structured`, `classify_enum`, `LLMClassifyNode` with constrained/fallback

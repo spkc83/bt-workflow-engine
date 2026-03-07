@@ -1,179 +1,264 @@
 procedure:
   id: cs_refund
   name: "Customer Service - Refund Request"
-  description: "Handle customer refund requests for orders"
-  version: "1.0"
+  description: "Handle customer refund requests with structured conditions and explicit tool mappings"
+  version: "2.0"
+  domain: customer_service
   trigger_intents:
     - refund
     - return
     - money back
     - cancel order
 
+  available_tools:
+    - lookup_order
+    - search_orders
+    - issue_refund
+    - issue_store_credit
+    - update_case_status
+    - escalate_to_supervisor
+
+  data_context:
+    - order_id
+    - customer_id
+    - order_data
+    - refund_result
+
   steps:
     - id: greet_and_collect
-      instruction: >
-        Check the customer's message for ANY order identification details — this includes:
-        an explicit order number (e.g., "ORD-123"), OR any natural language clues such as
-        a store/merchant name ("from TechMart"), item description ("headphones"), approximate
-        amount ("about $80"), or time reference ("last week", "yesterday").
-        If ANY of these details are present, you have enough to proceed — acknowledge briefly
-        and IMMEDIATELY move to the lookup_order step. Do NOT ask for an order ID when the
-        customer has already described their purchase. Do NOT stop and wait for another message.
-        Only if the message contains NO identifiable purchase details at all (e.g., the customer
-        just says "I want a refund" with no context), then greet warmly and ask them to describe
-        what they purchased — the store name, item, and approximate amount. Never ask for an
-        order ID — customers rarely know it.
+      name: "Collect Order Information"
       action: collect_info
-      required_info:
-        - order_identifier_or_description
+      instruction: >
+        Check the customer's message for ANY order identification details — an explicit
+        order number (e.g., "ORD-123"), or natural language clues such as a store/merchant
+        name, item description, approximate amount, or time reference. If ANY details are
+        present, acknowledge briefly and move to the lookup step immediately. Only if the
+        message has NO identifiable purchase details, greet warmly and ask them to describe
+        what they purchased.
+      extract_fields:
+        - key: order_id
+          description: "Explicit order number like ORD-123 or ORD-789"
+          examples: ["ORD-123", "ORD-789", "order 456"]
+        - key: merchant_name
+          description: "Store or merchant name from the customer's description"
+          examples: ["TechMart", "SportZone", "HomeGoods"]
+        - key: item_description
+          description: "Description of the item purchased"
+          examples: ["headphones", "running shoes", "laptop charger"]
+        - key: amount
+          description: "Approximate dollar amount of the order"
+          examples: ["$80", "about 50 dollars", "150"]
+      required_fields:
+        - order_id
       next_step: lookup_order
 
     - id: lookup_order
-      instruction: >
-        Find the customer's order using the information available. Choose the right tool:
-        - If the customer gave an EXACT order ID (e.g., "ORD-123"), use `lookup_order`.
-        - In ALL other cases (store name, item description, amount, date, or any combination
-          of natural language clues), use `search_orders`. Extract the details:
-          * merchant_name: the store or brand name mentioned (e.g., "TechMart", "SportZone")
-          * amount: any dollar figure mentioned (e.g., "$80" → 80). The tool searches ±10%.
-          * date: estimate from time references ("last week" → approximate date string)
-          * customer_id: use the user_id (which is the customer's ID, e.g., "CUST-456")
-          Pass whatever details you have — even just the merchant_name alone is enough.
-        If the search returns multiple matches, present them and ask the customer to confirm.
-        If exactly one match is found, proceed with it.
-        Once the order is retrieved, briefly confirm the details with the customer: "I found
-        your order from [merchant] placed on [date] for [items] ($[total])."
-        If the lookup fails or no orders are found, transition to the order_not_found step.
+      name: "Look Up Order"
       action: tool_call
-      tool: lookup_order
+      instruction: >
+        Find the customer's order. If an exact order ID was provided, use lookup_order.
+        Otherwise use search_orders with whatever details are available (merchant name,
+        amount, date, customer_id). Confirm the order details with the customer.
       tools:
-        - lookup_order
-        - search_orders
+        - name: lookup_order
+          arg_mappings:
+            - param: order_id
+              source: order_id
+          result_key: order_data
+          guard_condition:
+            field: order_id
+            operator: neq
+            value: ""
+        - name: search_orders
+          arg_mappings:
+            - param: customer_id
+              source: customer_id
+            - param: merchant_name
+              source: merchant_name
+            - param: amount
+              source: amount
+          result_key: search_result
       on_success: check_eligibility
       on_failure: order_not_found
 
     - id: check_eligibility
-      instruction: >
-        Evaluate whether the order qualifies for a refund based on the following criteria:
-        1. Time window: The order must have been placed within the last 30 days. If it is outside
-           the 30-day window, the refund is not eligible.
-        2. Order status: Only orders with status "delivered" or "shipped" are eligible for a
-           standard refund. Orders still in "processing" status should be handled as cancellations.
-        3. Item category: Certain non-refundable categories (e.g., digital downloads, perishables,
-           personalized items) are not eligible for refunds.
-        Review the order details retrieved in the previous step and determine which branch to follow.
-        Do not inform the customer of the outcome yet — simply determine the next step internally
-        based on the evaluation.
+      name: "Check Refund Eligibility"
       action: evaluate
+      instruction: >
+        Evaluate whether the order qualifies for a refund based on time window,
+        order status, and item category.
       conditions:
-        - if: "order_date within 30 days AND order_status in [delivered, shipped] AND category not in non_refundable_list"
-          next_step: process_refund
-        - if: "order_date outside 30 days"
+        - condition:
+            field: order_date
+            operator: within_days
+            value: 30
+          condition_description: "Order was placed within the last 30 days"
+          next_step: check_status
+        - condition:
+            field: order_date
+            operator: outside_days
+            value: 30
+          condition_description: "Order is outside the 30-day return window"
           next_step: deny_refund_window
-        - if: "order_status == processing"
+
+    - id: check_status
+      name: "Check Order Status"
+      action: evaluate
+      instruction: >
+        Check the order status to determine the appropriate action path.
+      conditions:
+        - condition:
+            field: order_status
+            operator: in
+            value: ["delivered", "shipped"]
+          condition_description: "Order has been delivered or shipped — eligible for refund"
+          next_step: process_refund
+        - condition:
+            field: order_status
+            operator: eq
+            value: "processing"
+          condition_description: "Order is still processing — handle as cancellation"
           next_step: cancel_order
 
     - id: process_refund
-      instruction: >
-        Inform the customer that their refund request has been approved. Be warm and positive in
-        your tone. Explain that the refund will be processed back to their original payment method
-        and provide an estimated timeline (typically 5-7 business days depending on their bank).
-        Provide the customer with a reference number for the refund transaction so they can follow
-        up if needed. Example: "Great news! Your refund has been approved and will be credited
-        back to your original payment method within 5-7 business days. Your refund reference
-        number is [REF_NUMBER]. Please keep this for your records."
-        After issuing the refund, proceed to close the case.
+      name: "Process Refund"
       action: tool_call
-      tool: issue_refund
+      instruction: >
+        Inform the customer their refund is approved. Be warm and positive. Explain
+        the refund will go back to their original payment method in 5-7 business days.
+        Provide a reference number.
+      tools:
+        - name: issue_refund
+          arg_mappings:
+            - param: order_id
+              source: order_id
+          fixed_args:
+            reason: "Customer requested refund"
+          result_key: refund_result
       on_success: close_case
       on_failure: escalate_case
 
     - id: deny_refund_window
-      instruction: >
-        Politely and empathetically inform the customer that unfortunately their order falls
-        outside the 30-day return window and is not eligible for a standard refund. Acknowledge
-        that this may be disappointing news. However, offer them alternatives to show goodwill:
-        1. Store credit: Offer to provide store credit for the value of the order.
-        2. Escalation: Offer to escalate the case to a supervisor for further review if the
-           customer is not satisfied with the store credit option.
-        Be gentle and understanding: "I understand this is disappointing, and I'm sorry we
-        can't process a full refund at this time since the purchase was made more than 30 days
-        ago. However, I'd love to offer you store credit for the full amount, or I can escalate
-        this to my supervisor for further review. Which would you prefer?"
+      name: "Deny Refund — Outside Window"
       action: inform
+      instruction: >
+        Politely inform the customer their order is outside the 30-day return window.
+        Offer store credit or escalation to a supervisor as alternatives.
       options:
-        - label: "Customer accepts store credit"
+        - label: "Store credit"
+          description: "Customer accepts store credit for the order value"
           next_step: offer_store_credit
-        - label: "Customer requests escalation"
+          detection_keywords:
+            - credit
+            - store
+            - accept
+            - "yes"
+            - okay
+            - sure
+            - fine
+        - label: "Escalation"
+          description: "Customer requests to speak with a supervisor"
           next_step: escalate_case
+          detection_keywords:
+            - escalat
+            - supervisor
+            - manager
+            - "no"
+            - not acceptable
+            - speak to someone
 
     - id: offer_store_credit
-      instruction: >
-        Process the store credit for the customer as an alternative resolution. Inform the customer
-        of the credit amount being applied to their account and how they can use it on future
-        purchases. Provide the credit balance and any expiry terms. Thank the customer for their
-        understanding and continued loyalty. Example: "I've applied $[AMOUNT] in store credit
-        to your account. You can use this on any future purchase at checkout. The credit is valid
-        for 12 months. Thank you so much for your understanding and for being a valued customer!"
-        Proceed to close the case after applying the credit.
+      name: "Issue Store Credit"
       action: tool_call
-      tool: issue_store_credit
+      instruction: >
+        Process store credit for the customer. Inform them of the credit amount,
+        how to use it, and the 12-month validity period.
+      tools:
+        - name: issue_store_credit
+          arg_mappings:
+            - param: order_id
+              source: order_id
+          result_key: store_credit_result
       on_success: close_case
       on_failure: escalate_case
 
     - id: order_not_found
-      instruction: >
-        Inform the customer that you were unable to locate an order with the information they
-        provided. Be apologetic and suggest possible reasons (typo, different email address,
-        guest checkout). Ask them to double-check and provide the information again or try an
-        alternative identifier. Example: "I'm sorry, I wasn't able to find an order with that
-        information. Could you double-check the order number or try the email address you used
-        at checkout? Sometimes orders placed as a guest may be under a different email."
-        After collecting updated information, return to the beginning to try again.
+      name: "Order Not Found"
       action: inform
-      next_step: greet_and_collect
+      instruction: >
+        Apologize that the order could not be found. Suggest possible reasons
+        (typo, different email, guest checkout) and ask to try again.
+      options:
+        - label: "Try again"
+          description: "Customer wants to provide updated information"
+          next_step: greet_and_collect
+          detection_keywords:
+            - try
+            - again
+            - check
+            - different
+            - another
+        - label: "Escalate"
+          description: "Customer wants help from a supervisor"
+          next_step: escalate_case
+          detection_keywords:
+            - help
+            - supervisor
+            - escalat
 
     - id: cancel_order
-      instruction: >
-        The order is still in processing status, which means it can be cancelled rather than
-        refunded. Inform the customer that since their order has not yet shipped, you can cancel
-        it and they will receive a full refund back to their original payment method.
-        Explain the cancellation timeline. Proceed to cancel the order and update the case status.
-        Example: "Since your order hasn't shipped yet, I can cancel it for you right away.
-        You'll receive a full refund to your original payment method within 3-5 business days."
+      name: "Cancel Processing Order"
       action: tool_call
-      tool: update_case_status
+      instruction: >
+        The order is still processing. Cancel it and inform the customer they
+        will receive a full refund within 3-5 business days.
+      tools:
+        - name: update_case_status
+          arg_mappings:
+            - param: case_id
+              source: case_id
+          fixed_args:
+            status: "cancelled"
+            notes: "Order cancelled — still in processing"
+          result_key: cancellation_result
       on_success: close_case
       on_failure: escalate_case
 
     - id: escalate_case
-      instruction: >
-        When standard resolution options have been exhausted or the customer explicitly requests
-        to speak with a supervisor, escalate the case to a senior representative. Before escalating,
-        gather a brief summary of the issue and what has been attempted so far. Inform the customer
-        that you are escalating their case and provide them with a case reference number.
-        Be reassuring: "I completely understand your frustration, and I want to make sure you
-        get the best possible resolution. I'm going to escalate your case to my supervisor who
-        will have additional options available. Your case reference number is [CASE_ID]. You
-        should hear back within [TIMEFRAME]."
+      name: "Escalate to Supervisor"
       action: tool_call
-      tool: escalate_to_supervisor
+      instruction: >
+        Escalate the case to a senior representative. Summarize the issue and
+        what has been attempted. Provide the customer with a case reference number.
+      tools:
+        - name: escalate_to_supervisor
+          arg_mappings:
+            - param: case_id
+              source: case_id
+          fixed_args:
+            reason: "Customer requested escalation"
+            priority: "medium"
+          result_key: escalation_result
       on_success: close_case
       on_failure: close_case
 
     - id: close_case
-      instruction: >
-        Wrap up the interaction by summarizing the actions taken during the conversation. Confirm
-        the resolution with the customer and check if there is anything else they need help with
-        before closing. Update the case status to reflect the outcome (resolved, escalated,
-        cancelled, etc.). Be warm and appreciative. Example: "To summarize, I've [processed your
-        refund / applied store credit / escalated your case]. Is there anything else I can help
-        you with today? Thank you so much for your patience, and I hope we've resolved this to
-        your satisfaction. Have a wonderful day!"
-        If the customer has additional questions, handle them before closing. Otherwise, end the
-        interaction with the case status updated.
+      name: "Close Case"
       action: tool_call
-      tool: update_case_status
+      instruction: >
+        Summarize the actions taken, confirm the resolution, and ask if there is
+        anything else the customer needs. Update the case status.
+      tools:
+        - name: update_case_status
+          arg_mappings:
+            - param: case_id
+              source: case_id
+          fixed_args:
+            status: "resolved"
+            notes: "Case resolved"
+          result_key: close_result
       on_success: end
       on_failure: end
       next_step: end
+      await_input: false
+      save_memory: true

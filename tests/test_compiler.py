@@ -293,7 +293,7 @@ class TestParser:
 # Full compilation tests
 # ---------------------------------------------------------------------------
 
-import py_trees
+from bt_engine.behaviour_tree import BehaviourTree
 from bt_engine.compiler import ProcedureCompiler
 
 
@@ -306,19 +306,19 @@ class TestFullCompilation:
 
     def test_compile_refund(self, compiler):
         tree = compiler.compile("procedures/customer_service_refund.yaml")
-        assert isinstance(tree, py_trees.trees.BehaviourTree)
+        assert isinstance(tree, BehaviourTree)
         assert tree.root is not None
         assert "cs_refund" in tree.root.name
 
     def test_compile_complaint(self, compiler):
         tree = compiler.compile("procedures/customer_service_complaint.yaml")
-        assert isinstance(tree, py_trees.trees.BehaviourTree)
+        assert isinstance(tree, BehaviourTree)
         assert tree.root is not None
         assert "cs_complaint" in tree.root.name
 
     def test_compile_fraud(self, compiler):
         tree = compiler.compile("procedures/fraud_ops_alert_triage.yaml")
-        assert isinstance(tree, py_trees.trees.BehaviourTree)
+        assert isinstance(tree, BehaviourTree)
         assert tree.root is not None
         assert "fraud_alert_triage" in tree.root.name
 
@@ -354,25 +354,25 @@ class TestTreeManager:
 
     def test_load_all(self, manager):
         assert len(manager.get_all_intents()) > 0
-        assert len(manager.get_all_procedures()) == 4
+        assert len(manager.get_all_procedures()) == 3
 
     def test_get_tree_factory_refund(self, manager):
         factory = manager.get_tree_factory("refund")
         assert factory is not None
         tree = factory()
-        assert isinstance(tree, py_trees.trees.BehaviourTree)
+        assert isinstance(tree, BehaviourTree)
 
     def test_get_tree_factory_complaint(self, manager):
         factory = manager.get_tree_factory("complaint")
         assert factory is not None
         tree = factory()
-        assert isinstance(tree, py_trees.trees.BehaviourTree)
+        assert isinstance(tree, BehaviourTree)
 
     def test_get_tree_factory_fraud(self, manager):
         factory = manager.get_tree_factory("fraud_alert")
         assert factory is not None
         tree = factory()
-        assert isinstance(tree, py_trees.trees.BehaviourTree)
+        assert isinstance(tree, BehaviourTree)
 
     def test_unknown_intent(self, manager):
         factory = manager.get_tree_factory("unknown_workflow")
@@ -393,7 +393,7 @@ class TestTreeManager:
     def test_reload(self, manager):
         """Reload should clear and re-populate."""
         manager.reload_all()
-        assert len(manager.get_all_procedures()) == 4
+        assert len(manager.get_all_procedures()) == 3
 
     def test_all_procedures_metadata(self, manager):
         procs = manager.get_all_procedures()
