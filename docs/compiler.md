@@ -31,11 +31,11 @@ The compiler (`bt_engine/compiler/`) converts YAML procedure definitions into fu
 
 ## Overview
 
-The compiler bridges the gap between declarative YAML workflow definitions and the imperative py_trees execution model:
+The compiler bridges the gap between declarative YAML workflow definitions and the async behaviour tree execution engine:
 
 ```
 ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
-│  YAML File   │────▶│   Compiler   │────▶│  py_trees    │
+│  YAML File   │────▶│   Compiler   │────▶│ BehaviourTree│
 │  (declare)   │     │  (compile)   │     │  (execute)   │
 └──────────────┘     └──────────────┘     └──────────────┘
        ▲
@@ -47,7 +47,7 @@ The compiler bridges the gap between declarative YAML workflow definitions and t
 └──────────────┘
 ```
 
-Each YAML step maps to a **subtree pattern** — a composition of py_trees nodes (Sequence, Selector, ConditionNode, ToolActionNode, LLMResponseNode, etc.) that implements the step's behavior.
+Each YAML step maps to a **subtree pattern** — a composition of async nodes (Sequence, Selector, ConditionNode, ToolActionNode, LLMResponseNode, etc.) that implements the step's behavior.
 
 ---
 
@@ -69,7 +69,7 @@ Each YAML step maps to a **subtree pattern** — a composition of py_trees nodes
    → Follow next_step chain for linear flow
    → Cycle detection via compiling_stack
 
-5. Return py_trees.trees.BehaviourTree
+5. Return BehaviourTree
 ```
 
 ---
@@ -165,7 +165,7 @@ Fields not in the map are looked up at the top-level `bb_dict`.
 
 **File**: `bt_engine/compiler/step_compilers.py`
 
-Each YAML action type has a dedicated compiler function that returns a py_trees subtree.
+Each YAML action type has a dedicated compiler function that returns a subtree of async BT nodes.
 
 See [Action Types](#action-types) below for the generated patterns.
 
@@ -692,7 +692,7 @@ The condition grammar is small (~15 patterns). A regex parser has zero external 
 
 ### Why fresh compilation per session?
 
-py_trees nodes hold mutable state (`_waiting` flags, internal counters). Sharing a tree between sessions would cause state corruption. Compiling a fresh tree per session takes microseconds of object construction and guarantees clean state.
+BT nodes hold mutable state (`_waiting` flags, internal counters). Sharing a tree between sessions would cause state corruption. Compiling a fresh tree per session takes microseconds of object construction and guarantees clean state.
 
 ### Why back-edge → None instead of loop nodes?
 

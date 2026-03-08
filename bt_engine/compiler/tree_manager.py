@@ -9,8 +9,7 @@ import logging
 from pathlib import Path
 from typing import Callable
 
-import py_trees
-
+from bt_engine.behaviour_tree import BehaviourTree
 from bt_engine.compiler import ProcedureCompiler
 
 logger = logging.getLogger(__name__)
@@ -75,7 +74,7 @@ class TreeManager:
                 "path": path,
             }
 
-    def get_tree_factory(self, intent: str) -> Callable[[], py_trees.trees.BehaviourTree] | None:
+    def get_tree_factory(self, intent: str) -> Callable[[], BehaviourTree] | None:
         """Get a tree factory for the given intent.
 
         Returns a callable that compiles a fresh tree each time (for clean state).

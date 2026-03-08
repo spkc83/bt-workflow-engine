@@ -74,7 +74,7 @@ async def get_customer_profile(customer_id: str, bb: dict) -> dict:
     return result
 
 
-async def issue_refund(order_id: str, reason: str, bb: dict) -> dict:
+async def issue_refund(order_id: str, bb: dict, reason: str = "Customer requested refund") -> dict:
     """Process a refund for a given order."""
     order_data = bb.get("order_data", {})
     amount = order_data.get("total", 0)
@@ -141,7 +141,7 @@ async def issue_store_credit(order_id: str, bb: dict) -> dict:
     return result
 
 
-async def update_case_status(case_id: str, status: str, notes: str, bb: dict) -> dict:
+async def update_case_status(case_id: str, bb: dict, status: str = "resolved", notes: str = "Case updated") -> dict:
     """Update the status of a customer service case."""
     now = datetime.now().isoformat()
 

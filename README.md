@@ -1,6 +1,6 @@
 # BT Workflow Engine
 
-A **behaviour tree workflow engine** for customer service automation. Workflows are defined as YAML procedures and compiled into deterministic async behaviour trees at runtime. LLMs handle natural language (response generation, extraction, classification) while Python conditions control all routing decisions.
+A **behaviour tree workflow engine** for customer service automation. Workflows are defined as YAML procedures and compiled into deterministic async behaviour trees at runtime using a custom, purpose-built async BT engine (no external BT library). LLMs handle natural language (response generation, extraction, classification) while Python conditions control all routing decisions.
 
 ## Architecture
 
@@ -16,8 +16,8 @@ A **behaviour tree workflow engine** for customer service automation. Workflows 
                   └────────┬────────┘
                            │ produces
                   ┌────────▼────────┐
-                  │  py_trees Tree  │  Sequence, Selector, Condition, etc.
-                  │ (Per Session)   │
+                  │ BehaviourTree   │  bt_engine/behaviour_tree.py
+                  │ (Per Session)   │  Custom async composites
                   └────────┬────────┘
                            │ ticks
                   ┌────────▼────────┐
@@ -42,7 +42,7 @@ A **behaviour tree workflow engine** for customer service automation. Workflows 
 - **Conversational pause points**: Tree pauses at `UserInputNode` boundaries for natural multi-turn dialogue
 - **Session persistence**: Sessions survive infrastructure failures via DB-backed pause & resume
 - **Cross-session memory**: Customer interaction history carries across sessions for contextual responses
-- **Fresh tree per session**: Each session gets a freshly compiled tree (py_trees nodes hold mutable state)
+- **Fresh tree per session**: Each session gets a freshly compiled tree (BT nodes hold mutable state)
 - **Hot reload**: YAML procedures can be reloaded at runtime without restart
 
 ## Project Structure
@@ -50,14 +50,15 @@ A **behaviour tree workflow engine** for customer service automation. Workflows 
 ```
 bt-workflow-engine/
 ├── bt_engine/                    # Core engine
-│   ├── nodes.py                  # Custom BT node types (10 nodes)
+│   ├── behaviour_tree.py          # Custom async BT engine (composites, decorators)
+│   ├── nodes.py                  # Leaf node types (LLM, Tool, Condition, etc.)
 │   ├── runner.py                 # BT execution engine (BTRunner)
-│   ├── audit.py                  # Tick-level execution tracing
+│   ├── audit.py                  # Audit trail collector (queries _audit_trail)
 │   ├── trees/                    # Hand-coded reference trees
 │   │   ├── refund.py
 │   │   ├── complaint.py
 │   │   └── fraud_triage.py
-│   └── compiler/                 # YAML-to-py_trees compiler
+│   └── compiler/                 # YAML-to-BehaviourTree compiler
 │       ├── __init__.py           # ProcedureCompiler (public API)
 │       ├── parser.py             # YAML loading + validation
 │       ├── condition_parser.py   # Condition string/object → Python predicate
@@ -118,7 +119,7 @@ uvicorn main:app --reload --port 8000
 ### Run Tests
 
 ```bash
-# Full test suite (170 tests)
+# Full test suite (172 tests)
 pytest tests/ -v
 
 # Just compiler tests
@@ -264,7 +265,7 @@ Returns the structured procedure and writes a YAML file ready for the compiler.
 
 ## BT Compiler
 
-The compiler (`bt_engine/compiler/`) converts YAML procedure definitions into py_trees behaviour trees. See [docs/compiler.md](docs/compiler.md) for detailed documentation.
+The compiler (`bt_engine/compiler/`) converts YAML procedure definitions into async behaviour trees. See [docs/compiler.md](docs/compiler.md) for detailed documentation.
 
 ### Compilation Pipeline
 
@@ -274,7 +275,7 @@ YAML file → parser.py (load + validate)
           → step_compilers.py (build subtrees per action type)
           → tool_registry.py (resolve tool functions)
           → __init__.py (recursive assembly with cycle detection)
-          → py_trees.BehaviourTree
+          → BehaviourTree (bt_engine/behaviour_tree.py)
 ```
 
 ### Supported YAML Actions
@@ -306,11 +307,23 @@ Unparseable conditions (e.g., `"multiple high-confidence fraud indicators presen
 
 ## Node Types
 
+### Composites & Decorators (`bt_engine/behaviour_tree.py`)
+
+| Node | Purpose | Status |
+|------|---------|--------|
+| `Sequence` | Run children left-to-right, stop on FAILURE/RUNNING (memory support) | SUCCESS/FAILURE/RUNNING |
+| `Selector` | Run children left-to-right, stop on SUCCESS/RUNNING | SUCCESS/FAILURE/RUNNING |
+| `Parallel` | Run children concurrently via `asyncio.gather` (all/any policy) | SUCCESS/FAILURE |
+| `Retry` | Retry child on failure with configurable attempts and backoff | SUCCESS/FAILURE/RUNNING |
+| `Inverter` | Flip SUCCESS ↔ FAILURE | SUCCESS/FAILURE/RUNNING |
+
+### Leaf Nodes (`bt_engine/nodes.py`)
+
 | Node | Purpose | Status |
 |------|---------|--------|
 | `LLMResponseNode` | Generate natural language via LLM | SUCCESS/FAILURE |
 | `LLMExtractNode` | Extract structured JSON from text | SUCCESS/FAILURE |
-| `LLMClassifyNode` | Classify input into categories | SUCCESS/FAILURE |
+| `LLMClassifyNode` | Classify input into categories (constrained enum decoding) | SUCCESS/FAILURE |
 | `ToolActionNode` | Call async tool function | SUCCESS/FAILURE |
 | `ConditionNode` | Evaluate Python predicate | SUCCESS/FAILURE |
 | `UserInputNode` | Pause for user input | RUNNING → SUCCESS |
@@ -385,7 +398,7 @@ The test suite validates the full stack:
 - **Ingestion tests** (12): Pipeline stages, validation, tool refinement, YAML output (mocked LLM)
 
 ```bash
-pytest tests/ -v  # 172 tests, ~4 seconds
+pytest tests/ -v  # 172 tests, ~5 seconds
 ```
 
 ## License

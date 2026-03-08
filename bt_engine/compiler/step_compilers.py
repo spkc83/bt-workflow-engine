@@ -1,15 +1,14 @@
-"""Step compilers: convert each YAML action type into a py_trees subtree.
+"""Step compilers: convert each YAML action type into a BT subtree.
 
 Each compile_* function takes a step dict, the full steps list, a ToolRegistry,
-and a recursive compile_step callback, and returns a py_trees Behaviour (subtree).
+and a recursive compile_step callback, and returns a Node (subtree).
 """
 
 from __future__ import annotations
 
 from typing import Callable
 
-import py_trees
-
+from bt_engine.behaviour_tree import Node, Sequence, Selector
 from bt_engine.nodes import (
     ConditionNode,
     LLMClassifyNode,
@@ -25,20 +24,11 @@ from bt_engine.compiler.tool_registry import ToolRegistry
 
 
 def _should_pause(step: dict) -> bool:
-    """Determine if a conversational pause (UserInputNode) should be inserted after this step.
-
-    Rules:
-    - If await_input is explicitly set, respect it.
-    - Default: pause after tool_call steps that have on_success (the user should see
-      the tool result confirmation before the workflow continues to the next phase).
-    - Default: do NOT pause if on_success is 'end' (no more steps to run).
-    """
     explicit = step.get("await_input")
     if explicit is not None:
         return bool(explicit)
 
-    # Default heuristic: pause after tool_call with on_success pointing to a real step
-    if step.get("action") == "tool_call":
+    if step.get("action") in ("tool_call", "inform"):
         on_success = step.get("on_success")
         if on_success and on_success != "end":
             return True
@@ -46,12 +36,31 @@ def _should_pause(step: dict) -> bool:
     return False
 
 
+def _tool_call_response_prompt(step: dict) -> str:
+    """Build a customer-facing prompt for a tool_call step's LLM response.
+
+    The raw YAML instruction contains operational directives (tool names,
+    parameter details) meant for the compiler, not the LLM. Passing it
+    directly causes the LLM to generate tool-call syntax in its output.
+
+    Instead, we give the LLM a summarization prompt that references the
+    step name and tells it to present results conversationally.
+    """
+    step_name = step.get("name", step["id"])
+    return (
+        f"You just completed the '{step_name}' step. "
+        f"Summarize the results for the customer in plain, conversational language. "
+        f"Use any order, refund, escalation, or case data available in context. "
+        f"Never mention tool names, function calls, JSON, or internal systems."
+    )
+
+
 def compile_collect_info(
     step: dict,
     all_steps: dict[str, dict],
     registry: ToolRegistry,
     compile_step: Callable,
-) -> py_trees.behaviour.Behaviour:
+) -> Node:
     """Compile a collect_info step.
 
     Pattern:
@@ -101,7 +110,7 @@ def compile_collect_info(
             f"{step['instruction']}"
         )
 
-    root = py_trees.composites.Sequence(step_id, memory=True)
+    root = Sequence(step_id, memory=True)
 
     # Initial extraction
     extract = LLMExtractNode(
@@ -111,7 +120,7 @@ def compile_collect_info(
     )
 
     # Check if we have enough info
-    has_info = py_trees.composites.Selector(f"check_has_info_{step_id}", memory=False)
+    has_info = Selector(f"check_has_info_{step_id}", memory=False)
 
     # Check for order_id
     got_id = ConditionNode(
@@ -131,7 +140,7 @@ def compile_collect_info(
     )
 
     # Ask for info if nothing found
-    ask_seq = py_trees.composites.Sequence(f"ask_for_info_{step_id}", memory=True)
+    ask_seq = Sequence(f"ask_for_info_{step_id}", memory=True)
     ask_seq.add_children([
         LLMResponseNode(
             f"ask_{step_id}",
@@ -141,8 +150,8 @@ def compile_collect_info(
         LLMExtractNode(
             f"re_extract_{step_id}",
             prompt_template=(
-                f"Extract relevant details from the customer's response. "
-                f"Look for any identifiers or descriptions."
+                "Extract relevant details from the customer's response. "
+                "Look for any identifiers or descriptions."
             ),
             extract_keys=extract_keys,
         ),
@@ -164,7 +173,7 @@ def compile_tool_call(
     all_steps: dict[str, dict],
     registry: ToolRegistry,
     compile_step: Callable,
-) -> py_trees.behaviour.Behaviour:
+) -> Node:
     """Compile a tool_call step.
 
     Supports fine-grained tool_configs (list of ToolConfig dicts with
@@ -173,8 +182,6 @@ def compile_tool_call(
     Single tool: Selector with success/failure paths.
     Multiple tools: Selector with condition-guarded paths per tool.
     """
-    step_id = step["id"]
-
     # Fine-grained format: tool_configs with explicit arg_mappings
     # Also detect when 'tools' contains dicts (fine-grained YAML uses tools: [{name: ...}])
     tool_configs = step.get("tool_configs")
@@ -249,7 +256,7 @@ def _compile_single_tool(
     all_steps: dict[str, dict],
     registry: ToolRegistry,
     compile_step: Callable,
-) -> py_trees.behaviour.Behaviour:
+) -> Node:
     """Compile a single-tool tool_call step."""
     step_id = step["id"]
     entry = registry.get(tool_name)
@@ -279,18 +286,18 @@ def _compile_single_tool(
 
     # If both on_success and on_failure point somewhere, build a Selector
     if on_success or on_failure:
-        root = py_trees.composites.Selector(step_id, memory=False)
+        root = Selector(step_id, memory=False)
 
         # Success path
-        success_seq = py_trees.composites.Sequence(f"{step_id}_success", memory=True)
+        success_seq = Sequence(f"{step_id}_success", memory=True)
         success_children = [tool_node]
 
-        # Add an LLM response if there's an instruction
+        # Add an LLM response to summarize tool results for the customer
         if step.get("instruction"):
             success_children.append(
                 LLMResponseNode(
                     f"respond_{step_id}",
-                    prompt_template=step["instruction"],
+                    prompt_template=_tool_call_response_prompt(step),
                 )
             )
 
@@ -322,7 +329,7 @@ def _compile_single_tool(
                     failure_children.append(fail_subtree)
 
         if failure_children:
-            failure_seq = py_trees.composites.Sequence(f"{step_id}_failure", memory=True)
+            failure_seq = Sequence(f"{step_id}_failure", memory=True)
             failure_seq.add_children(failure_children)
             root.add_children([success_seq, failure_seq])
         else:
@@ -332,11 +339,11 @@ def _compile_single_tool(
         return root
     else:
         # Simple tool call, no branching
-        root = py_trees.composites.Sequence(step_id, memory=True)
+        root = Sequence(step_id, memory=True)
         children = [tool_node]
         if step.get("instruction"):
             children.append(
-                LLMResponseNode(f"respond_{step_id}", prompt_template=step["instruction"])
+                LLMResponseNode(f"respond_{step_id}", prompt_template=_tool_call_response_prompt(step))
             )
         root.add_children(children)
         return root
@@ -348,7 +355,7 @@ def _compile_multi_tool(
     all_steps: dict[str, dict],
     registry: ToolRegistry,
     compile_step: Callable,
-) -> py_trees.behaviour.Behaviour:
+) -> Node:
     """Compile a multi-tool tool_call step (e.g., lookup_order + search_orders).
 
     Args:
@@ -360,7 +367,7 @@ def _compile_multi_tool(
     Sequence that chains to the on_success subtree (mirroring _compile_single_tool).
     """
     step_id = step["id"]
-    tool_selector = py_trees.composites.Selector(f"{step_id}_tools", memory=False)
+    tool_selector = Selector(f"{step_id}_tools", memory=False)
 
     for i, tool_cfg in enumerate(per_tool_configs):
         tool_name = tool_cfg["name"]
@@ -375,7 +382,7 @@ def _compile_multi_tool(
             fixed_args.update(tool_cfg["fixed_args"])
         result_key = tool_cfg.get("result_key") or f"{tool_name}_result"
 
-        path = py_trees.composites.Sequence(f"{step_id}_{tool_name}", memory=True)
+        path = Sequence(f"{step_id}_{tool_name}", memory=True)
         children = []
 
         # Use guard_condition from YAML if provided, otherwise fall back to heuristic
@@ -403,11 +410,11 @@ def _compile_multi_tool(
             result_key=result_key,
         ))
 
-        # Add confirmation response
+        # Add confirmation response (customer-facing summary, not raw instruction)
         if step.get("instruction"):
             children.append(LLMResponseNode(
                 f"confirm_{tool_name}_{step_id}",
-                prompt_template=step["instruction"],
+                prompt_template=_tool_call_response_prompt(step),
             ))
 
         path.add_children(children)
@@ -433,7 +440,7 @@ def _compile_multi_tool(
     # Chain on_success target after the tool selector (same pattern as _compile_single_tool)
     on_success = step.get("on_success")
     if on_success:
-        root = py_trees.composites.Sequence(step_id, memory=True)
+        root = Sequence(step_id, memory=True)
         root_children = [tool_selector]
 
         # Insert conversational pause before continuing to on_success
@@ -461,7 +468,7 @@ def compile_evaluate(
     all_steps: dict[str, dict],
     registry: ToolRegistry,
     compile_step: Callable,
-) -> py_trees.behaviour.Behaviour:
+) -> Node:
     """Compile an evaluate step.
 
     Supports three formats:
@@ -508,16 +515,16 @@ def _compile_evaluate_deterministic(
     parsed_conditions: list[tuple[dict, Callable]],
     all_steps: dict[str, dict],
     compile_step: Callable,
-) -> py_trees.behaviour.Behaviour:
+) -> Node:
     """Compile evaluate with all-parseable conditions -> pure ConditionNode routing."""
-    root = py_trees.composites.Selector(step_id, memory=False)
+    root = Selector(step_id, memory=False)
 
     for i, (cond, predicate) in enumerate(parsed_conditions):
         next_step_id = cond.get("next_step")
         if not next_step_id:
             continue
 
-        path = py_trees.composites.Sequence(f"{step_id}_cond_{i}", memory=True)
+        path = Sequence(f"{step_id}_cond_{i}", memory=True)
         children = [
             ConditionNode(f"{step_id}_check_{i}", predicate),
         ]
@@ -539,9 +546,9 @@ def _compile_evaluate_with_classify(
     conditions: list[dict],
     all_steps: dict[str, dict],
     compile_step: Callable,
-) -> py_trees.behaviour.Behaviour:
+) -> Node:
     """Compile evaluate with unparseable conditions -> LLMClassifyNode + routing."""
-    root = py_trees.composites.Sequence(step_id, memory=True)
+    root = Sequence(step_id, memory=True)
 
     # Derive categories from the condition next_steps
     categories = []
@@ -571,12 +578,12 @@ def _compile_evaluate_with_classify(
     )
 
     # Route based on classification result
-    router = py_trees.composites.Selector(f"route_{step_id}", memory=False)
+    router = Selector(f"route_{step_id}", memory=False)
 
     for category in categories:
         next_step_id = category_to_next[category]
 
-        path = py_trees.composites.Sequence(f"{step_id}_{category}", memory=True)
+        path = Sequence(f"{step_id}_{category}", memory=True)
         cat = category  # capture for lambda
         path_children = [
             ConditionNode(
@@ -601,7 +608,7 @@ def compile_inform(
     all_steps: dict[str, dict],
     registry: ToolRegistry,
     compile_step: Callable,
-) -> py_trees.behaviour.Behaviour:
+) -> Node:
     """Compile an inform step.
 
     With options: present info, wait for response, route by option.
@@ -610,24 +617,22 @@ def compile_inform(
     step_id = step["id"]
     options = step.get("options")
 
-    root = py_trees.composites.Sequence(step_id, memory=True)
+    root = Sequence(step_id, memory=True)
 
-    # Always present the information
-    root.add_children([
-        LLMResponseNode(f"inform_{step_id}", prompt_template=step["instruction"]),
-        UserInputNode(f"wait_{step_id}"),
-    ])
+    root.add_children([LLMResponseNode(f"inform_{step_id}", prompt_template=step["instruction"])])
+    if _should_pause(step):
+        root.add_children([UserInputNode(f"wait_{step_id}")])
 
     if options and len(options) > 1:
         # Multiple options — route by customer response
-        router = py_trees.composites.Selector(f"route_{step_id}", memory=False)
+        router = Selector(f"route_{step_id}", memory=False)
 
         for i, opt in enumerate(options):
             next_step_id = opt.get("next_step")
             if not next_step_id:
                 continue
 
-            opt_path = py_trees.composites.Sequence(f"{step_id}_opt_{i}", memory=True)
+            opt_path = Sequence(f"{step_id}_opt_{i}", memory=True)
 
             # Fine-grained: use detection_keywords if provided
             detection_keywords = opt.get("detection_keywords")
@@ -685,7 +690,7 @@ def compile_end(
     all_steps: dict[str, dict],
     registry: ToolRegistry,
     compile_step: Callable,
-) -> py_trees.behaviour.Behaviour:
+) -> Node:
     """Compile an end step -> simple LogNode."""
     return LogNode(f"{step['id']}", message="workflow_end")
 

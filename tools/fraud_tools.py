@@ -24,7 +24,7 @@ async def get_fraud_alert(alert_id: str, bb: dict) -> dict:
     return result
 
 
-async def get_account_transactions(account_id: str, days: int, bb: dict) -> dict:
+async def get_account_transactions(account_id: str, bb: dict, days: int = 30) -> dict:
     """Get recent transactions for an account."""
     transactions = await query_all(
         "SELECT * FROM transactions WHERE account_id = ? ORDER BY date DESC",
@@ -86,7 +86,7 @@ async def check_device_fingerprint(account_id: str, bb: dict) -> dict:
     return data
 
 
-async def flag_account(account_id: str, reason: str, action: str, bb: dict) -> dict:
+async def flag_account(account_id: str, bb: dict, reason: str = "Fraud detected", action: str = "freeze") -> dict:
     """Flag an account for fraud and take protective action."""
     now = datetime.now()
     case_number = f"FRAUD-{now.strftime('%Y%m%d%H%M%S')}"
@@ -117,7 +117,7 @@ async def flag_account(account_id: str, reason: str, action: str, bb: dict) -> d
     return result
 
 
-async def submit_sar(account_id: str, alert_id: str, findings: str, bb: dict) -> dict:
+async def submit_sar(account_id: str, alert_id: str, bb: dict, findings: str = "Suspicious activity reported") -> dict:
     """Submit a Suspicious Activity Report (SAR)."""
     now = datetime.now()
     result = {
@@ -136,7 +136,7 @@ async def submit_sar(account_id: str, alert_id: str, findings: str, bb: dict) ->
     return result
 
 
-async def close_alert(alert_id: str, resolution: str, bb: dict) -> dict:
+async def close_alert(alert_id: str, bb: dict, resolution: str = "resolved") -> dict:
     """Close a fraud alert with a resolution."""
     now = datetime.now().isoformat()
 

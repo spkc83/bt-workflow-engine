@@ -137,28 +137,24 @@ class TestClassifyEnum:
 class TestLLMClassifyNodeConstrained:
     """Test that LLMClassifyNode uses constrained decoding."""
 
-    def _setup_bb(self):
-        """Set up py_trees blackboard for testing."""
-        import py_trees
-        py_trees.blackboard.Blackboard.enable_activity_stream()
-        py_trees.blackboard.Blackboard.clear()
-        bb = py_trees.blackboard.Client(name="test_setup")
-        bb.register_key(key="user_message", access=py_trees.common.Access.WRITE)
-        bb.register_key(key="bb_dict", access=py_trees.common.Access.WRITE)
-        bb.set("user_message", "This is clearly fraud")
-        bb.set("bb_dict", {})
-        return bb
+    def _make_bb(self) -> dict:
+        """Create a blackboard dict for testing."""
+        return {
+            "user_message": "This is clearly fraud",
+            "agent_response": "",
+            "awaiting_input": False,
+            "audit_trail": [],
+            "_audit_trail": [],
+            "_tick_count": 1,
+        }
 
-    def teardown_method(self):
-        """Clear blackboard between tests."""
-        import py_trees
-        py_trees.blackboard.Blackboard.clear()
-
-    def test_classify_node_uses_constrained(self):
+    @pytest.mark.asyncio
+    async def test_classify_node_uses_constrained(self):
         """LLMClassifyNode should attempt constrained enum decoding."""
+        from bt_engine.behaviour_tree import Status
         from bt_engine.nodes import LLMClassifyNode
 
-        bb = self._setup_bb()
+        bb = self._make_bb()
         node = LLMClassifyNode(
             name="test_classify",
             prompt_template="Classify the alert outcome",
@@ -175,19 +171,18 @@ class TestLLMClassifyNodeConstrained:
 
         with patch("bt_engine.compiler.llm_utils.get_genai_client", return_value=mock_client), \
              patch("bt_engine.compiler.llm_utils.get_model_name", return_value="gemini-2.5-flash"):
-            node.initialise()
-            import py_trees
-            status = node.update()
+            status = await node.tick(bb)
 
-        assert status == py_trees.common.Status.SUCCESS
-        bb_dict = bb.get("bb_dict")
-        assert bb_dict["classification"] == "fraud_confirmed"
+        assert status == Status.SUCCESS
+        assert bb["classification"] == "fraud_confirmed"
 
-    def test_classify_node_fallback_on_error(self):
+    @pytest.mark.asyncio
+    async def test_classify_node_fallback_on_error(self):
         """LLMClassifyNode falls back to free-text if constrained fails."""
+        from bt_engine.behaviour_tree import Status
         from bt_engine.nodes import LLMClassifyNode
 
-        bb = self._setup_bb()
+        bb = self._make_bb()
         node = LLMClassifyNode(
             name="test_classify_fallback",
             prompt_template="Classify this",
@@ -209,10 +204,7 @@ class TestLLMClassifyNodeConstrained:
              patch("bt_engine.compiler.llm_utils.get_model_name", return_value="gemini-2.5-flash"), \
              patch("bt_engine.nodes.get_genai_client", return_value=mock_client), \
              patch("bt_engine.nodes.get_model_name", return_value="gemini-2.5-flash"):
-            node.initialise()
-            import py_trees
-            status = node.update()
+            status = await node.tick(bb)
 
-        assert status == py_trees.common.Status.SUCCESS
-        bb_dict = bb.get("bb_dict")
-        assert bb_dict["result"] == "approve"
+        assert status == Status.SUCCESS
+        assert bb["result"] == "approve"
