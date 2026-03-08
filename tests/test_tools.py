@@ -67,7 +67,7 @@ async def test_issue_refund():
     from tools.crm_tools import issue_refund, lookup_order
     bb = {}
     await lookup_order("ORD-123", bb)
-    result = await issue_refund("ORD-123", "test refund", bb)
+    result = await issue_refund("ORD-123", bb, reason="test refund")
     assert result["status"] == "processed"
     assert result["amount"] == 79.99
     assert bb["workflow_status"] == "refund_processed"
@@ -77,7 +77,7 @@ async def test_issue_refund():
 async def test_update_case_status_new():
     from tools.crm_tools import update_case_status
     bb = {}
-    result = await update_case_status("CASE-TEST", "resolved", "Test notes", bb)
+    result = await update_case_status("CASE-TEST", bb, status="resolved", notes="Test notes")
     assert result["status"] == "resolved"
     assert bb["workflow_status"] == "resolved"
 
@@ -86,7 +86,7 @@ async def test_update_case_status_new():
 async def test_escalate_to_supervisor():
     from tools.common_tools import escalate_to_supervisor
     bb = {}
-    result = await escalate_to_supervisor("CASE-TEST", "test reason", "high", bb)
+    result = await escalate_to_supervisor("CASE-TEST", bb, reason="test reason", priority="high")
     assert result["status"] == "escalated"
     assert result["priority"] == "high"
     assert bb["workflow_status"] == "escalated"
@@ -97,8 +97,8 @@ async def test_add_case_note():
     from tools.common_tools import add_case_note
     from tools.crm_tools import update_case_status
     bb = {}
-    await update_case_status("CASE-TEST", "open", "initial", bb)
-    result = await add_case_note("CASE-TEST", "Test note content", bb)
+    await update_case_status("CASE-TEST", bb, status="open", notes="initial")
+    result = await add_case_note("CASE-TEST", bb, note="Test note content")
     assert result["note"] == "Test note content"
     assert len(bb["case_notes"]) == 1
 
@@ -125,7 +125,7 @@ async def test_get_fraud_alert_not_found():
 async def test_get_account_transactions():
     from tools.fraud_tools import get_account_transactions
     bb = {}
-    result = await get_account_transactions("ACCT-1001", 30, bb)
+    result = await get_account_transactions("ACCT-1001", bb, days=30)
     assert result["summary"]["total_transactions"] >= 3
     assert result["summary"]["flagged_count"] >= 1
 
@@ -143,6 +143,6 @@ async def test_check_device_fingerprint():
 async def test_flag_account():
     from tools.fraud_tools import flag_account
     bb = {}
-    result = await flag_account("ACCT-1001", "test fraud", "freeze", bb)
+    result = await flag_account("ACCT-1001", bb, reason="test fraud", action="freeze")
     assert result["action_taken"] == "freeze"
     assert bb["account_flagged"] is True

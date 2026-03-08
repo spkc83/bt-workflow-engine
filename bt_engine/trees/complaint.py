@@ -1,13 +1,12 @@
 """Complaint handling workflow behaviour tree.
 
 Maps the customer_service_complaint.yaml procedure into a deterministic
-py_trees behaviour tree.
+behaviour tree.
 """
 
 from __future__ import annotations
 
-import py_trees
-
+from bt_engine.behaviour_tree import BehaviourTree, Selector, Sequence
 from bt_engine.nodes import (
     ConditionNode,
     LLMClassifyNode,
@@ -21,25 +20,25 @@ from tools.crm_tools import lookup_order, search_orders, update_case_status
 from tools.common_tools import add_case_note, escalate_to_supervisor
 
 
-def create_complaint_tree() -> py_trees.trees.BehaviourTree:
+def create_complaint_tree() -> BehaviourTree:
     """Build the complete complaint handling behaviour tree."""
-    root = py_trees.composites.Sequence("complaint_workflow", memory=True)
+    root = Sequence("complaint_workflow", memory=True)
     root.add_children([
         _create_greet_and_collect(),
         _create_identify_issue(),
         _create_route_by_type(),
         LogNode("complaint_workflow_complete", message="Complaint workflow completed"),
     ])
-    return py_trees.trees.BehaviourTree(root=root)
+    return BehaviourTree(root=root)
 
 
 # ---------------------------------------------------------------------------
 # Subtree: greet_and_collect
 # ---------------------------------------------------------------------------
 
-def _create_greet_and_collect() -> py_trees.behaviour.Behaviour:
+def _create_greet_and_collect() -> Sequence:
     """Extract complaint details and any order clues from user message."""
-    root = py_trees.composites.Sequence("greet_and_collect", memory=True)
+    root = Sequence("greet_and_collect", memory=True)
     root.add_children([
         LLMExtractNode(
             "extract_complaint_details",
@@ -62,7 +61,7 @@ def _create_greet_and_collect() -> py_trees.behaviour.Behaviour:
 # Subtree: identify_issue
 # ---------------------------------------------------------------------------
 
-def _create_identify_issue() -> py_trees.behaviour.Behaviour:
+def _create_identify_issue() -> LLMClassifyNode:
     """Classify the complaint into a category using LLM."""
     return LLMClassifyNode(
         "classify_complaint",
@@ -79,12 +78,12 @@ def _create_identify_issue() -> py_trees.behaviour.Behaviour:
 # Subtree: route_by_type
 # ---------------------------------------------------------------------------
 
-def _create_route_by_type() -> py_trees.behaviour.Behaviour:
+def _create_route_by_type() -> Selector:
     """Route to appropriate handling based on complaint type."""
-    root = py_trees.composites.Selector("route_by_complaint_type", memory=False)
+    root = Selector("route_by_complaint_type", memory=False)
 
     # Path 1: product_quality or delivery — need order lookup first
-    order_related = py_trees.composites.Sequence("order_related_complaint", memory=True)
+    order_related = Sequence("order_related_complaint", memory=True)
     order_related.add_children([
         ConditionNode(
             "is_order_related",
@@ -95,7 +94,7 @@ def _create_route_by_type() -> py_trees.behaviour.Behaviour:
     ])
 
     # Path 2: service or billing — proceed directly to resolution
-    service_related = py_trees.composites.Sequence("service_related_complaint", memory=True)
+    service_related = Sequence("service_related_complaint", memory=True)
     service_related.add_children([
         ConditionNode(
             "is_service_related",
@@ -115,12 +114,12 @@ def _create_route_by_type() -> py_trees.behaviour.Behaviour:
 # Subtree: lookup_context
 # ---------------------------------------------------------------------------
 
-def _create_lookup_context() -> py_trees.behaviour.Behaviour:
+def _create_lookup_context() -> Selector:
     """Look up order context for product/delivery complaints."""
-    root = py_trees.composites.Selector("lookup_context", memory=False)
+    root = Selector("lookup_context", memory=False)
 
     # Try exact ID lookup
-    exact = py_trees.composites.Sequence("exact_complaint_lookup", memory=True)
+    exact = Sequence("exact_complaint_lookup", memory=True)
     exact.add_children([
         ConditionNode("has_complaint_order_id", lambda bb: bool(bb.get("order_id"))),
         ToolActionNode(
@@ -132,7 +131,7 @@ def _create_lookup_context() -> py_trees.behaviour.Behaviour:
     ])
 
     # Try search by description
-    search = py_trees.composites.Sequence("search_complaint_order", memory=True)
+    search = Sequence("search_complaint_order", memory=True)
     search.add_children([
         ConditionNode(
             "has_complaint_clues",
@@ -156,9 +155,9 @@ def _create_lookup_context() -> py_trees.behaviour.Behaviour:
 # Subtree: attempt_resolution
 # ---------------------------------------------------------------------------
 
-def _create_attempt_resolution() -> py_trees.behaviour.Behaviour:
+def _create_attempt_resolution() -> Sequence:
     """Offer resolution based on complaint type, then handle response."""
-    root = py_trees.composites.Sequence("attempt_resolution", memory=True)
+    root = Sequence("attempt_resolution", memory=True)
     root.add_children([
         LLMResponseNode(
             "offer_resolution",
@@ -177,16 +176,15 @@ def _create_attempt_resolution() -> py_trees.behaviour.Behaviour:
     return root
 
 
-def _create_handle_resolution_response() -> py_trees.behaviour.Behaviour:
+def _create_handle_resolution_response() -> Selector:
     """Route based on customer satisfaction after resolution offer."""
-    root = py_trees.composites.Selector("handle_resolution_response", memory=False)
+    root = Selector("handle_resolution_response", memory=False)
 
     # Path 1: Customer accepts — document and close
-    accept_path = py_trees.composites.Sequence("customer_accepts", memory=True)
+    accept_path = Sequence("customer_accepts", memory=True)
     accept_path.add_children([
         ConditionNode(
             "check_accepts",
-            # Simplified: if not escalation keywords, assume acceptance
             lambda bb: not any(
                 kw in bb.get("user_message", "").lower()
                 for kw in ["escalate", "supervisor", "manager", "not satisfied", "unacceptable"]
@@ -196,7 +194,7 @@ def _create_handle_resolution_response() -> py_trees.behaviour.Behaviour:
     ])
 
     # Path 2: Customer wants escalation
-    escalate_path = py_trees.composites.Sequence("customer_escalates", memory=True)
+    escalate_path = Sequence("customer_escalates", memory=True)
     escalate_path.add_children([
         _create_escalate_complaint(),
     ])
@@ -209,8 +207,8 @@ def _create_handle_resolution_response() -> py_trees.behaviour.Behaviour:
 # Subtree: document_and_close
 # ---------------------------------------------------------------------------
 
-def _create_document_and_close() -> py_trees.behaviour.Behaviour:
-    root = py_trees.composites.Sequence("document_and_close", memory=True)
+def _create_document_and_close() -> Sequence:
+    root = Sequence("document_and_close", memory=True)
     root.add_children([
         ToolActionNode(
             "add_complaint_note",
@@ -241,8 +239,8 @@ def _create_document_and_close() -> py_trees.behaviour.Behaviour:
 # Subtree: escalate_complaint
 # ---------------------------------------------------------------------------
 
-def _create_escalate_complaint() -> py_trees.behaviour.Behaviour:
-    root = py_trees.composites.Sequence("escalate_complaint", memory=True)
+def _create_escalate_complaint() -> Sequence:
+    root = Sequence("escalate_complaint", memory=True)
     root.add_children([
         ToolActionNode(
             "escalate_complaint_case",

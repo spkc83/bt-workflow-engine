@@ -22,7 +22,7 @@ from config import get_client, get_model_name
 
 _sessions: dict[str, BTRunner] = {}
 
-# Tree manager — compiles YAML procedures into py_trees trees
+# Tree manager — compiles YAML procedures into behaviour trees
 _tree_manager = TreeManager(procedures_dir="procedures")
 
 # Allowed tables for data browser
@@ -182,9 +182,15 @@ async def chat(request: ChatRequest) -> ChatResponse:
                 response = await client.aio.models.generate_content(
                     model=get_model_name(),
                     contents=(
-                        "You are a helpful customer service agent. "
-                        "Answer this general question concisely:\n\n"
-                        f"{request.message}"
+                        "You are a friendly customer service agent for our company. "
+                        "You are chatting live with a customer. Answer their question "
+                        "helpfully and concisely as if you work for the company. "
+                        "Never say you are an AI or that you don't have policies — "
+                        "provide a reasonable, helpful answer based on standard "
+                        "retail/service practices (e.g. 30-day return window, "
+                        "refunds to original payment method, etc.). Keep it warm "
+                        "and conversational (2-4 sentences).\n\n"
+                        f"Customer: {request.message}"
                     ),
                 )
                 return ChatResponse(
@@ -221,7 +227,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         await runner.load_memories(request.user_id)
 
     # Run the tree with the user message
-    result = runner.run(request.message)
+    result = await runner.run(request.message)
 
     # Save session state after every run (for pause & resume)
     await runner.save_session()

@@ -94,15 +94,18 @@ procedure:
         Pull up the relevant order using the information available. Choose the right tool:
         - If the customer gave an EXACT order ID (e.g., "ORD-123"), use `lookup_order`.
         - In ALL other cases (store name, item description, amount, date, or any natural
-          language clues), use `search_orders`. Extract the details:
+        language clues), use `search_orders`. Extract the details:
           * merchant_name: the store or brand name mentioned
           * amount: any dollar figure mentioned. The tool searches ±10%.
           * date: estimate from time references ("last week" → approximate date)
           * customer_id: use the user_id (which is the customer's ID, e.g., "CUST-456")
           Pass whatever details you have — even just the merchant_name alone is enough.
         If the search returns multiple matches, present them and ask the customer to confirm.
-        Whether the lookup succeeds or fails, proceed to attempt a resolution — if the lookup
-        fails, work with the information the customer has provided directly.
+        If a single order is found, acknowledge you found the order and summarize the key details
+        (merchant, item, total, delivery date) in plain language. Do NOT include tool output,
+        JSON, or internal function traces. Whether the lookup succeeds or fails, proceed to
+        attempt a resolution — if the lookup fails, work with the information the customer has
+        provided directly.
       tools:
         - name: lookup_order
           arg_mappings:
@@ -124,6 +127,7 @@ procedure:
           result_key: search_result
       on_success: attempt_resolution
       on_failure: attempt_resolution
+      await_input: true
 
     - id: attempt_resolution
       name: "Propose Resolution"
@@ -157,6 +161,14 @@ procedure:
             - thanks
             - great
             - sounds good
+            - good
+            - all set
+            - that's all
+            - no thanks
+            - i'm good
+            - i am good
+            - no worries
+            - perfect
         - label: "Customer is unsatisfied or requests escalation"
           description: "Customer wants to speak with a supervisor"
           next_step: escalate_if_needed
@@ -164,10 +176,13 @@ procedure:
             - escalat
             - supervisor
             - manager
-            - "no"
             - not acceptable
             - unsatisfied
+            - not satisfied
             - speak to someone
+            - unacceptable
+            - ridiculous
+            - not good enough
 
     - id: escalate_if_needed
       name: "Escalate to Supervisor"
@@ -221,8 +236,8 @@ procedure:
       instruction: >
         Bring the interaction to a positive close. Summarize the resolution that was reached
         and confirm with the customer that they are satisfied before ending the conversation.
-        Ask if there is anything else you can help them with today. Update the case status
-        to reflect the outcome (resolved, escalated, pending follow-up, etc.).
+        Ask if there is anything else you can help them with today. Respect a clear no and do
+        not re-open the case or escalate unless the customer asks.
       tools:
         - name: update_case_status
           arg_mappings:

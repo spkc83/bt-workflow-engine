@@ -1,13 +1,12 @@
 """Fraud alert triage workflow behaviour tree.
 
 Maps the fraud_ops_alert_triage.yaml procedure into a deterministic
-py_trees behaviour tree with Python condition evaluation for risk scoring.
+behaviour tree with Python condition evaluation for risk scoring.
 """
 
 from __future__ import annotations
 
-import py_trees
-
+from bt_engine.behaviour_tree import BehaviourTree, Selector, Sequence
 from bt_engine.nodes import (
     ConditionNode,
     LLMClassifyNode,
@@ -28,27 +27,27 @@ from tools.fraud_tools import (
 from tools.common_tools import add_case_note, escalate_to_supervisor
 
 
-def create_fraud_triage_tree() -> py_trees.trees.BehaviourTree:
+def create_fraud_triage_tree() -> BehaviourTree:
     """Build the complete fraud alert triage behaviour tree."""
-    root = py_trees.composites.Sequence("fraud_triage_workflow", memory=True)
+    root = Sequence("fraud_triage_workflow", memory=True)
     root.add_children([
         _create_receive_alert(),
         _create_review_and_route(),
         LogNode("fraud_triage_complete", message="Fraud triage workflow completed"),
     ])
-    return py_trees.trees.BehaviourTree(root=root)
+    return BehaviourTree(root=root)
 
 
 # ---------------------------------------------------------------------------
 # Subtree: receive_alert
 # ---------------------------------------------------------------------------
 
-def _create_receive_alert() -> py_trees.behaviour.Behaviour:
+def _create_receive_alert() -> Selector:
     """Get the fraud alert by ID."""
-    root = py_trees.composites.Selector("receive_alert", memory=False)
+    root = Selector("receive_alert", memory=False)
 
     # Path 1: alert ID provided — look it up
-    has_alert = py_trees.composites.Sequence("has_alert_id", memory=True)
+    has_alert = Sequence("has_alert_id", memory=True)
     has_alert.add_children([
         LLMExtractNode(
             "extract_alert_id",
@@ -69,7 +68,7 @@ def _create_receive_alert() -> py_trees.behaviour.Behaviour:
     ])
 
     # Path 2: no alert ID — ask for it
-    ask_alert = py_trees.composites.Sequence("ask_for_alert_id", memory=True)
+    ask_alert = Sequence("ask_for_alert_id", memory=True)
     ask_alert.add_children([
         LLMResponseNode(
             "request_alert_id",
@@ -100,12 +99,12 @@ def _create_receive_alert() -> py_trees.behaviour.Behaviour:
 # Subtree: review_and_route (deterministic severity routing)
 # ---------------------------------------------------------------------------
 
-def _create_review_and_route() -> py_trees.behaviour.Behaviour:
+def _create_review_and_route() -> Selector:
     """Route based on alert severity and risk score using Python conditions."""
-    root = py_trees.composites.Selector("review_and_route", memory=False)
+    root = Selector("review_and_route", memory=False)
 
     # Path 1: High severity (risk_score >= 80 or severity == high)
-    high_severity = py_trees.composites.Sequence("high_severity_path", memory=True)
+    high_severity = Sequence("high_severity_path", memory=True)
     high_severity.add_children([
         ConditionNode(
             "is_high_severity",
@@ -120,7 +119,7 @@ def _create_review_and_route() -> py_trees.behaviour.Behaviour:
     ])
 
     # Path 2: Medium severity (risk_score 40-79)
-    medium_severity = py_trees.composites.Sequence("medium_severity_path", memory=True)
+    medium_severity = Sequence("medium_severity_path", memory=True)
     medium_severity.add_children([
         ConditionNode(
             "is_medium_severity",
@@ -135,7 +134,7 @@ def _create_review_and_route() -> py_trees.behaviour.Behaviour:
     ])
 
     # Path 3: Low severity (risk_score < 40)
-    low_severity = py_trees.composites.Sequence("low_severity_path", memory=True)
+    low_severity = Sequence("low_severity_path", memory=True)
     low_severity.add_children([
         ConditionNode(
             "is_low_severity",
@@ -153,9 +152,9 @@ def _create_review_and_route() -> py_trees.behaviour.Behaviour:
 # Subtree: full_investigation (transactions + device info)
 # ---------------------------------------------------------------------------
 
-def _create_full_investigation() -> py_trees.behaviour.Behaviour:
+def _create_full_investigation() -> Sequence:
     """Gather transaction evidence and device fingerprint data."""
-    root = py_trees.composites.Sequence("full_investigation", memory=True)
+    root = Sequence("full_investigation", memory=True)
     root.add_children([
         ToolActionNode(
             "get_transactions",
@@ -180,9 +179,9 @@ def _create_full_investigation() -> py_trees.behaviour.Behaviour:
 # Subtree: assess_risk (LLM-assisted determination + deterministic actions)
 # ---------------------------------------------------------------------------
 
-def _create_assess_risk() -> py_trees.behaviour.Behaviour:
+def _create_assess_risk() -> Sequence:
     """Consolidate evidence and make risk determination."""
-    root = py_trees.composites.Sequence("assess_risk", memory=True)
+    root = Sequence("assess_risk", memory=True)
     root.add_children([
         LLMClassifyNode(
             "classify_risk",
@@ -204,12 +203,12 @@ def _create_assess_risk() -> py_trees.behaviour.Behaviour:
     return root
 
 
-def _create_act_on_determination() -> py_trees.behaviour.Behaviour:
+def _create_act_on_determination() -> Selector:
     """Take action based on risk determination."""
-    root = py_trees.composites.Selector("act_on_determination", memory=False)
+    root = Selector("act_on_determination", memory=False)
 
     # Path 1: Fraud confirmed — flag account
-    confirmed = py_trees.composites.Sequence("fraud_confirmed_action", memory=True)
+    confirmed = Sequence("fraud_confirmed_action", memory=True)
     confirmed.add_children([
         ConditionNode(
             "is_fraud_confirmed",
@@ -223,8 +222,8 @@ def _create_act_on_determination() -> py_trees.behaviour.Behaviour:
             result_key="flag_result",
         ),
         # Check SAR threshold (>= $5000)
-        py_trees.composites.Selector("sar_check", memory=False, children=[
-            py_trees.composites.Sequence("file_sar", memory=True, children=[
+        Selector("sar_check", memory=False, children=[
+            Sequence("file_sar", memory=True, children=[
                 ConditionNode(
                     "meets_sar_threshold",
                     lambda bb: bb.get("alert_data", {}).get("amount_involved", 0) >= 5000,
@@ -251,7 +250,7 @@ def _create_act_on_determination() -> py_trees.behaviour.Behaviour:
     ])
 
     # Path 2: Fraud suspected — escalate to senior
-    suspected = py_trees.composites.Sequence("fraud_suspected_action", memory=True)
+    suspected = Sequence("fraud_suspected_action", memory=True)
     suspected.add_children([
         ConditionNode(
             "is_fraud_suspected",
@@ -279,7 +278,7 @@ def _create_act_on_determination() -> py_trees.behaviour.Behaviour:
     ])
 
     # Path 3: False positive — clear alert
-    false_positive = py_trees.composites.Sequence("false_positive_action", memory=True)
+    false_positive = Sequence("false_positive_action", memory=True)
     false_positive.add_children([
         ConditionNode(
             "is_false_positive",
@@ -310,8 +309,8 @@ def _create_act_on_determination() -> py_trees.behaviour.Behaviour:
 # Subtree: document_and_close
 # ---------------------------------------------------------------------------
 
-def _create_document_and_close(resolution: str) -> py_trees.behaviour.Behaviour:
-    root = py_trees.composites.Sequence(f"document_and_close_{resolution}", memory=True)
+def _create_document_and_close(resolution: str) -> Sequence:
+    root = Sequence(f"document_and_close_{resolution}", memory=True)
     root.add_children([
         ToolActionNode(
             f"add_triage_note_{resolution}",

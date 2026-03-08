@@ -9,7 +9,7 @@ from datetime import datetime
 from database.db import execute, query_all
 
 
-async def escalate_to_supervisor(case_id: str, reason: str, priority: str, bb: dict) -> dict:
+async def escalate_to_supervisor(case_id: str, bb: dict, reason: str = "Customer requested escalation", priority: str = "medium") -> dict:
     """Escalate a case to a supervisor for further review."""
     now = datetime.now().isoformat()
     escalation_id = f"ESC-{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -40,7 +40,7 @@ async def escalate_to_supervisor(case_id: str, reason: str, priority: str, bb: d
     return result
 
 
-async def add_case_note(case_id: str, note: str, bb: dict) -> dict:
+async def add_case_note(case_id: str, bb: dict, note: str = "Case note added") -> dict:
     """Add a note to a case file."""
     now = datetime.now().isoformat()
     note_id = f"NOTE-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"

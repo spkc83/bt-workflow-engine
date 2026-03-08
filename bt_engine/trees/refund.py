@@ -1,13 +1,12 @@
 """Refund workflow behaviour tree.
 
 Maps the customer_service_refund.yaml procedure into a deterministic
-py_trees behaviour tree with Python condition evaluation.
+behaviour tree with Python condition evaluation.
 """
 
 from __future__ import annotations
 
-import py_trees
-
+from bt_engine.behaviour_tree import BehaviourTree, Selector, Sequence
 from bt_engine.nodes import (
     ConditionNode,
     LLMExtractNode,
@@ -20,25 +19,25 @@ from tools.crm_tools import issue_refund, lookup_order, search_orders, update_ca
 from tools.common_tools import escalate_to_supervisor
 
 
-def create_refund_tree() -> py_trees.trees.BehaviourTree:
+def create_refund_tree() -> BehaviourTree:
     """Build the complete refund workflow behaviour tree."""
-    root = py_trees.composites.Sequence("refund_workflow", memory=True)
+    root = Sequence("refund_workflow", memory=True)
     root.add_children([
         _create_greet_and_collect(),
         _create_lookup_order(),
         _create_check_eligibility(),
         LogNode("refund_workflow_complete", message="Refund workflow completed"),
     ])
-    return py_trees.trees.BehaviourTree(root=root)
+    return BehaviourTree(root=root)
 
 
 # ---------------------------------------------------------------------------
 # Subtree: greet_and_collect
 # ---------------------------------------------------------------------------
 
-def _create_greet_and_collect() -> py_trees.behaviour.Behaviour:
+def _create_greet_and_collect() -> Sequence:
     """Extract order clues from user message, or ask for them."""
-    root = py_trees.composites.Sequence("greet_and_collect", memory=True)
+    root = Sequence("greet_and_collect", memory=True)
 
     # Try to extract order info from the initial message
     extract = LLMExtractNode(
@@ -52,7 +51,7 @@ def _create_greet_and_collect() -> py_trees.behaviour.Behaviour:
     )
 
     # Check if we got enough info to proceed
-    has_info = py_trees.composites.Selector("check_has_info", memory=False)
+    has_info = Selector("check_has_info", memory=False)
 
     got_order_id = ConditionNode(
         "has_order_id",
@@ -64,7 +63,7 @@ def _create_greet_and_collect() -> py_trees.behaviour.Behaviour:
     )
 
     # If no info, ask and re-extract
-    ask_sequence = py_trees.composites.Sequence("ask_for_info", memory=True)
+    ask_sequence = Sequence("ask_for_info", memory=True)
     ask_sequence.add_children([
         LLMResponseNode(
             "ask_purchase_details",
@@ -101,12 +100,12 @@ def _create_greet_and_collect() -> py_trees.behaviour.Behaviour:
 # Subtree: lookup_order
 # ---------------------------------------------------------------------------
 
-def _create_lookup_order() -> py_trees.behaviour.Behaviour:
+def _create_lookup_order() -> Selector:
     """Look up the order by ID or search by description."""
-    root = py_trees.composites.Selector("lookup_order", memory=False)
+    root = Selector("lookup_order", memory=False)
 
     # Path 1: exact order ID lookup
-    exact_lookup = py_trees.composites.Sequence("exact_id_lookup", memory=True)
+    exact_lookup = Sequence("exact_id_lookup", memory=True)
     exact_lookup.add_children([
         ConditionNode("has_exact_order_id", lambda bb: bool(bb.get("order_id"))),
         ToolActionNode(
@@ -126,7 +125,7 @@ def _create_lookup_order() -> py_trees.behaviour.Behaviour:
     ])
 
     # Path 2: search by description
-    search_lookup = py_trees.composites.Sequence("search_by_description", memory=True)
+    search_lookup = Sequence("search_by_description", memory=True)
     search_lookup.add_children([
         ConditionNode(
             "has_search_clues",
@@ -136,7 +135,6 @@ def _create_lookup_order() -> py_trees.behaviour.Behaviour:
             "call_search_orders",
             tool_func=search_orders,
             arg_keys={"customer_id": "customer_id"},
-            # merchant_name and amount are optional — passed via _build_search_args
         ),
         LLMResponseNode(
             "confirm_search_result",
@@ -148,7 +146,7 @@ def _create_lookup_order() -> py_trees.behaviour.Behaviour:
     ])
 
     # Path 3: order not found — ask again
-    not_found = py_trees.composites.Sequence("order_not_found", memory=True)
+    not_found = Sequence("order_not_found", memory=True)
     not_found.add_children([
         LLMResponseNode(
             "inform_not_found",
@@ -168,12 +166,12 @@ def _create_lookup_order() -> py_trees.behaviour.Behaviour:
 # Subtree: check_eligibility (deterministic conditions)
 # ---------------------------------------------------------------------------
 
-def _create_check_eligibility() -> py_trees.behaviour.Behaviour:
+def _create_check_eligibility() -> Selector:
     """Evaluate refund eligibility using Python conditions, not LLM."""
-    root = py_trees.composites.Selector("check_eligibility", memory=False)
+    root = Selector("check_eligibility", memory=False)
 
     # Path 1: Eligible — within 30 days + delivered/shipped
-    eligible = py_trees.composites.Sequence("eligible_path", memory=True)
+    eligible = Sequence("eligible_path", memory=True)
     eligible.add_children([
         ConditionNode(
             "within_30_days",
@@ -187,7 +185,7 @@ def _create_check_eligibility() -> py_trees.behaviour.Behaviour:
     ])
 
     # Path 2: Outside 30-day window
-    outside_window = py_trees.composites.Sequence("outside_window_path", memory=True)
+    outside_window = Sequence("outside_window_path", memory=True)
     outside_window.add_children([
         ConditionNode(
             "outside_30_days",
@@ -197,7 +195,7 @@ def _create_check_eligibility() -> py_trees.behaviour.Behaviour:
     ])
 
     # Path 3: Order still processing — offer cancellation
-    still_processing = py_trees.composites.Sequence("processing_path", memory=True)
+    still_processing = Sequence("processing_path", memory=True)
     still_processing.add_children([
         ConditionNode(
             "status_is_processing",
@@ -214,8 +212,8 @@ def _create_check_eligibility() -> py_trees.behaviour.Behaviour:
 # Subtree: process_refund
 # ---------------------------------------------------------------------------
 
-def _create_process_refund() -> py_trees.behaviour.Behaviour:
-    root = py_trees.composites.Sequence("process_refund", memory=True)
+def _create_process_refund() -> Sequence:
+    root = Sequence("process_refund", memory=True)
     root.add_children([
         ToolActionNode(
             "call_issue_refund",
@@ -242,8 +240,8 @@ def _create_process_refund() -> py_trees.behaviour.Behaviour:
 # Subtree: deny_refund_window
 # ---------------------------------------------------------------------------
 
-def _create_deny_refund_window() -> py_trees.behaviour.Behaviour:
-    root = py_trees.composites.Sequence("deny_refund_window", memory=True)
+def _create_deny_refund_window() -> Sequence:
+    root = Sequence("deny_refund_window", memory=True)
     root.add_children([
         LLMResponseNode(
             "inform_outside_window",
@@ -261,17 +259,15 @@ def _create_deny_refund_window() -> py_trees.behaviour.Behaviour:
     return root
 
 
-def _create_handle_denial_response() -> py_trees.behaviour.Behaviour:
+def _create_handle_denial_response() -> Selector:
     """Handle customer's response to denial — escalate or close."""
-    root = py_trees.composites.Selector("handle_denial_response", memory=False)
+    root = Selector("handle_denial_response", memory=False)
 
     # If customer wants escalation
-    escalate_path = py_trees.composites.Sequence("customer_wants_escalation", memory=True)
+    escalate_path = Sequence("customer_wants_escalation", memory=True)
     escalate_path.add_children([
         ConditionNode(
             "wants_escalation",
-            # After the LLM classifies intent in the next tick, check
-            # For now, default to escalation as it's the safer path
             lambda bb: True,  # Simplified: always offer escalation path
         ),
         _create_escalate_case(),
@@ -285,8 +281,8 @@ def _create_handle_denial_response() -> py_trees.behaviour.Behaviour:
 # Subtree: cancel_order
 # ---------------------------------------------------------------------------
 
-def _create_cancel_order() -> py_trees.behaviour.Behaviour:
-    root = py_trees.composites.Sequence("cancel_order", memory=True)
+def _create_cancel_order() -> Sequence:
+    root = Sequence("cancel_order", memory=True)
     root.add_children([
         LLMResponseNode(
             "inform_cancellation",
@@ -306,8 +302,8 @@ def _create_cancel_order() -> py_trees.behaviour.Behaviour:
 # Subtree: escalate_case
 # ---------------------------------------------------------------------------
 
-def _create_escalate_case() -> py_trees.behaviour.Behaviour:
-    root = py_trees.composites.Sequence("escalate_case", memory=True)
+def _create_escalate_case() -> Sequence:
+    root = Sequence("escalate_case", memory=True)
     root.add_children([
         ToolActionNode(
             "call_escalate",
@@ -333,8 +329,8 @@ def _create_escalate_case() -> py_trees.behaviour.Behaviour:
 # Subtree: close_case
 # ---------------------------------------------------------------------------
 
-def _create_close_case(status: str) -> py_trees.behaviour.Behaviour:
-    root = py_trees.composites.Sequence(f"close_case_{status}", memory=True)
+def _create_close_case(status: str) -> Sequence:
+    root = Sequence(f"close_case_{status}", memory=True)
     root.add_children([
         ToolActionNode(
             f"update_case_{status}",

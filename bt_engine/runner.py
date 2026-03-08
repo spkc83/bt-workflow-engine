@@ -2,8 +2,8 @@
 
 The BTRunner:
 - Accepts a user message
-- Writes it to the py_trees blackboard
-- Ticks the tree until RUNNING (waiting for input) or SUCCESS/FAILURE
+- Writes it to the blackboard (a plain dict)
+- Ticks the tree once (async — processes until RUNNING or completion)
 - Collects LLM-generated responses from the blackboard
 - Returns the response text and execution trace
 - Supports session save/restore for pause & resume
@@ -18,19 +18,10 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 
-import py_trees
-
-from bt_engine.audit import AuditVisitor
+from bt_engine.audit import AuditCollector
+from bt_engine.behaviour_tree import BehaviourTree, Status
 
 logger = logging.getLogger(__name__)
-
-
-def _bb_get(client, key, default=None):
-    """Safe blackboard get with default for py_trees v2.4."""
-    try:
-        return client.get(key)
-    except (KeyError, AttributeError):
-        return default
 
 
 @dataclass
@@ -51,7 +42,7 @@ class BTRunner:
 
     def __init__(
         self,
-        tree: py_trees.trees.BehaviourTree,
+        tree: BehaviourTree,
         session_state: dict | None = None,
         session_id: str | None = None,
         procedure_id: str | None = None,
@@ -62,38 +53,33 @@ class BTRunner:
         self.procedure_id = procedure_id
         self.intent = intent
         self._completed = False  # Completion guard
-        self.audit_visitor = AuditVisitor()
-        self.tree.visitors.append(self.audit_visitor)
+        self.audit = AuditCollector()
 
-        # Set up the blackboard with a single bb_dict for all shared state
-        self._bb = py_trees.blackboard.Client(name="runner")
-        self._bb.register_key(key="bb_dict", access=py_trees.common.Access.WRITE)
-        self._bb.register_key(key="user_message", access=py_trees.common.Access.WRITE)
-        self._bb.register_key(key="agent_response", access=py_trees.common.Access.WRITE)
-        self._bb.register_key(key="awaiting_input", access=py_trees.common.Access.WRITE)
-        self._bb.register_key(key="audit_trail", access=py_trees.common.Access.WRITE)
-        self._bb.register_key(key="conversation_history", access=py_trees.common.Access.WRITE)
+        # Initialize blackboard as a plain dict
+        self._bb: dict = {}
+        if session_state:
+            self._bb.update(session_state)
 
-        # Initialize blackboard
-        initial_state = session_state or {}
-        self._bb.set("bb_dict", initial_state)
-        self._bb.set("user_message", "")
-        self._bb.set("agent_response", "")
-        self._bb.set("awaiting_input", False)
-        self._bb.set("audit_trail", [])
-        self._bb.set("conversation_history", initial_state.get("_conversation_history", []))
+        # Ensure standard keys exist
+        self._bb.setdefault("user_message", "")
+        self._bb.setdefault("agent_response", "")
+        self._bb.setdefault("awaiting_input", False)
+        self._bb.setdefault("audit_trail", [])
+        self._bb.setdefault("_audit_trail", [])
+        self._bb.setdefault("_tick_count", 0)
 
-        # Setup the tree (calls initialise on all nodes)
-        self.tree.setup()
+        # Restore conversation history from session state if present
+        if "_conversation_history" in self._bb:
+            self._bb.setdefault("conversation_history", self._bb.pop("_conversation_history"))
+        else:
+            self._bb.setdefault("conversation_history", [])
 
-    def run(self, user_message: str) -> RunResult:
+    async def run(self, user_message: str) -> RunResult:
         """Process a user message by ticking the tree.
 
-        Args:
-            user_message: The user's input text.
-
-        Returns:
-            RunResult with the agent response, tree status, and trace.
+        A single await tree.tick(bb) call processes the entire tree until
+        a UserInputNode returns RUNNING or the tree completes. No tick
+        loop needed — the async composites handle full traversal.
         """
         # Completion guard: don't re-tick completed trees
         if self._completed:
@@ -101,88 +87,79 @@ class BTRunner:
             return RunResult(
                 response="This workflow has already been completed. Please start a new session if you need further assistance.",
                 status="SUCCESS",
-                trace=self.audit_visitor.get_trace(),
-                blackboard_state=dict(_bb_get(self._bb, "bb_dict", {})),
+                trace=self.get_trace(),
+                blackboard_state=self._get_public_state(),
             )
 
         # Reset per-turn state
-        self._bb.set("user_message", user_message)
-        self._bb.set("agent_response", "")
-        self._bb.set("awaiting_input", False)
+        self._bb["user_message"] = user_message
+        self._bb["agent_response"] = ""
+        self._bb["awaiting_input"] = False
 
         # Append to conversation history
-        history = _bb_get(self._bb, "conversation_history", [])
-        history.append({"role": "user", "content": user_message, "timestamp": datetime.now().isoformat()})
-        self._bb.set("conversation_history", history)
+        history = self._bb.setdefault("conversation_history", [])
+        history.append({
+            "role": "user",
+            "content": user_message,
+            "timestamp": datetime.now().isoformat(),
+        })
 
-        # Sync user_message into bb_dict so ConditionNode predicates can access it
-        bb_dict = _bb_get(self._bb, "bb_dict", {})
-        bb_dict["user_message"] = user_message
-        if "case_id" not in bb_dict:
-            bb_dict["case_id"] = f"CASE-{self.session_id[:8]}"
-        self._bb.set("bb_dict", bb_dict)
+        # Ensure case_id exists
+        if "case_id" not in self._bb:
+            self._bb["case_id"] = f"CASE-{self.session_id[:8]}"
 
-        # Tick the tree
-        max_ticks = 50  # Safety limit
-        ticks = 0
+        # Tick the tree — single async call handles full traversal
+        self._bb["_tick_count"] = self._bb.get("_tick_count", 0) + 1
+        self.audit.tick_count = self._bb["_tick_count"]
 
-        while ticks < max_ticks:
-            self.tree.tick()
-            ticks += 1
+        status = await self.tree.tick(self._bb)
 
-            # Check if a UserInputNode signaled that it needs input
-            if _bb_get(self._bb, "awaiting_input", False):
-                logger.info(f"Tree paused at tick {ticks} — awaiting user input")
-                break
-
-            # Check if tree completed
-            root_status = self.tree.root.status
-            if root_status in (py_trees.common.Status.SUCCESS, py_trees.common.Status.FAILURE):
-                logger.info(f"Tree completed at tick {ticks} with status {root_status}")
-                self._completed = True
-                break
+        # Check if tree completed
+        if status in (Status.SUCCESS, Status.FAILURE):
+            logger.info(f"Tree completed with status {status}")
+            self._completed = True
 
         # Collect response
-        response = _bb_get(self._bb, "agent_response", "")
+        response = self._bb.get("agent_response", "")
+        response = _sanitize_response(response)
 
         # Determine status string
-        if _bb_get(self._bb, "awaiting_input", False):
-            status = "RUNNING"
-        elif self.tree.root.status == py_trees.common.Status.SUCCESS:
-            status = "SUCCESS"
-        elif self.tree.root.status == py_trees.common.Status.FAILURE:
-            status = "FAILURE"
-        else:
-            status = "RUNNING"
+        status_str = status.value
 
         # Append assistant response to history
         if response:
-            history = _bb_get(self._bb, "conversation_history", [])
-            history.append({"role": "assistant", "content": response, "timestamp": datetime.now().isoformat()})
-            self._bb.set("conversation_history", history)
+            history.append({
+                "role": "assistant",
+                "content": response,
+                "timestamp": datetime.now().isoformat(),
+            })
 
         return RunResult(
             response=response,
-            status=status,
-            trace=self.audit_visitor.get_trace(),
-            blackboard_state=dict(_bb_get(self._bb, "bb_dict", {})),
+            status=status_str,
+            trace=self.get_trace(),
+            blackboard_state=self._get_public_state(),
         )
+
+    def _get_public_state(self) -> dict:
+        """Return blackboard state without internal underscore keys."""
+        return {k: v for k, v in self._bb.items() if not k.startswith("_")}
 
     def get_blackboard_state(self) -> dict:
         """Return current blackboard state for session persistence."""
-        return dict(_bb_get(self._bb, "bb_dict", {}))
+        return self._get_public_state()
 
     def get_trace(self) -> list[dict]:
         """Return the full audit trace."""
-        return self.audit_visitor.get_trace()
+        return self.audit.get_trace(self._bb)
 
     def get_trace_summary(self) -> dict:
         """Return a summary of the execution trace."""
-        return self.audit_visitor.get_summary()
+        return self.audit.get_summary(self._bb)
 
     def get_execution_path(self) -> list[dict]:
         """Return just the active execution path."""
-        return self.audit_visitor.get_execution_path()
+        return self.audit.get_execution_path(self._bb)
 
     # ------------------------------------------------------------------
     # Session persistence
@@ -192,24 +169,28 @@ class BTRunner:
         """Persist current session state to the database for pause & resume."""
         from database.db import execute
 
-        bb_dict = _bb_get(self._bb, "bb_dict", {})
-        history = _bb_get(self._bb, "conversation_history", [])
+        bb = self._bb
+        history = bb.get("conversation_history", [])
 
-        # _completed_steps is a set — convert to list for JSON serialization
-        serializable_bb = dict(bb_dict)
-        completed = serializable_bb.get("_completed_steps")
+        # Build serializable state — exclude transient internal keys
+        serializable_bb = {}
+        for key, val in bb.items():
+            if key in ("_audit_trail", "_tick_count"):
+                continue  # Transient, don't persist
+            if key == "_completed_steps" and isinstance(val, set):
+                serializable_bb[key] = list(val)
+            elif key.startswith("_"):
+                continue
+            else:
+                serializable_bb[key] = val
+
+        # Preserve _completed_steps for resume
+        completed = bb.get("_completed_steps")
         if isinstance(completed, set):
             serializable_bb["_completed_steps"] = list(completed)
 
         now = datetime.now().isoformat()
-
-        # Determine tree status
-        if self._completed:
-            tree_status = "SUCCESS"
-        elif _bb_get(self._bb, "awaiting_input", False):
-            tree_status = "RUNNING"
-        else:
-            tree_status = "RUNNING"
+        tree_status = "SUCCESS" if self._completed else "RUNNING"
 
         await execute(
             """INSERT OR REPLACE INTO sessions
@@ -219,14 +200,14 @@ class BTRunner:
                    (SELECT created_at FROM sessions WHERE session_id = ?), ?), ?)""",
             (
                 self.session_id,
-                bb_dict.get("customer_id"),
+                bb.get("customer_id"),
                 self.procedure_id,
                 self.intent,
                 json.dumps(serializable_bb, default=str),
                 json.dumps(history, default=str),
                 tree_status,
-                None,  # current_step — could be enhanced later
-                self.session_id, now,  # COALESCE params for created_at
+                None,
+                self.session_id, now,
                 now,
             ),
         )
@@ -243,7 +224,6 @@ class BTRunner:
         if row is None:
             return None
 
-        # Deserialize JSON fields
         bb_state = json.loads(row["blackboard_state"]) if row["blackboard_state"] else {}
         history = json.loads(row["conversation_history"]) if row["conversation_history"] else []
 
@@ -251,7 +231,7 @@ class BTRunner:
         if "_completed_steps" in bb_state and isinstance(bb_state["_completed_steps"], list):
             bb_state["_completed_steps"] = set(bb_state["_completed_steps"])
 
-        # Stash conversation history in bb_state for restoration
+        # Stash conversation history for restoration
         bb_state["_conversation_history"] = history
 
         return {
@@ -290,7 +270,26 @@ class BTRunner:
                         pass
                 memories.append(mem)
 
-            bb_dict = _bb_get(self._bb, "bb_dict", {})
-            bb_dict["customer_memories"] = memories
-            self._bb.set("bb_dict", bb_dict)
+            self._bb["customer_memories"] = memories
             logger.info(f"Loaded {len(memories)} memories for customer {customer_id}")
+
+
+def _sanitize_response(response: str) -> str:
+    if not response:
+        return response
+
+    cleaned_lines = []
+    for line in response.splitlines():
+        lowered = line.lower()
+        if "\"tool_code\"" in lowered or "tool_code" in lowered:
+            continue
+        if "print(" in lowered and "_orders" in lowered:
+            continue
+        if "print(" in lowered and "_order" in lowered:
+            continue
+        if "print(" in lowered and "_alert" in lowered:
+            continue
+        cleaned_lines.append(line)
+
+    cleaned = "\n".join(cleaned_lines).strip()
+    return cleaned
