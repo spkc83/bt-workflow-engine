@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "Behaviour Tree workflow engine for customer service CRM"
 requires-python = ">=3.11"
 dependencies = [
-    "py-trees>=2.3",
     "google-genai",
     "fastapi",
     "uvicorn[standard]",
